@@ -490,19 +490,22 @@ _GENDER_TO_VARIANT = {
     "NEUTRAL": "neutral",
 }
 
-def _with_script(lang: str) -> str:
-    """Add script subtag for QtSpeech locale matching. "en-gb" -> "en-Latn-GB".
+def _normalize_lang(lang: str) -> str:
+    """Canonicalize to plain BCP-47 lang[-REGION]. "en-gb" -> "en-GB".
 
-    QtSpeech-speechd's connectToSpeechDispatcher() calls setLocale(QLocale()),
-    which constructs a QLocale that includes the script. QLocale("en-gb")
-    has script=AnyScript and doesn't compare equal to QLocale(English, Latn,
-    UK), so m_voices.values(systemLocale) misses our voices. Emitting the
-    script via langcodes.maximize() fixes the storage key.
+    We deliberately *don't* emit script subtags. Gecko's speech-dispatcher
+    bridge (Firefox, Zotero 9 read-aloud) treats lang-Script-REGION as
+    region-mismatched and filters those voices out. QtSpeech-speechd still
+    works because the Okular picker's setVoice(name) path inserts each
+    voice under QLocale(lang) (script=AnyScript), and the subsequent
+    availableVoices() call queries the same key — so script is irrelevant
+    there as long as we emit the en-US dup below for the initial lookup
+    bucket.
     """
     if not lang or lang == "none":
         return lang
     try:
-        return langcodes.Language.get(lang).maximize().to_tag()
+        return langcodes.Language.get(lang).simplify_script().to_tag()
     except (langcodes.LanguageTagError, ValueError):
         return lang
 
@@ -538,35 +541,6 @@ def cmd_list_voices(line: str) -> None:
         write_line("304 CANT LIST VOICES")
         return
 
-    # ── HACK: duplicate non-US English voices under en-Latn-US ─────────────
-    #
-    # QtSpeech-speechd's connectToSpeechDispatcher() picks an initial locale
-    # by calling setLocale(QLocale()), then setLocale(QLocale().language()) on
-    # failure. Both paths have known Qt6 quirks:
-    #
-    #   1. QLocale() (== QLocale::system()) carries hidden "system override"
-    #      state, so it never compares equal to any QLocale constructed from
-    #      a string. m_voices.values(systemLocale) returns empty → fails.
-    #   2. QLocale(QLocale::English) resolves to en_US (Qt's CLDR default for
-    #      English). On any English-locale system the engine ends up at en_US.
-    #
-    # Okular reads its saved ttsVoice as a string and matches against
-    # speech->availableVoices() (current-locale only). So a saved British
-    # voice is never found, the picker stays en-US, and the user is stuck.
-    #
-    # Workaround: also advertise every en-* voice under en-Latn-US so
-    # Okular's en_US iteration finds all English voices. Audio still works
-    # correctly — the daemon synthesizes whichever voice id Okular sends
-    # back via SET synthesis_voice=<name>, regardless of locale.
-    #
-    # **To revert** once the upstream bug is fixed (Okular: iterate all
-    # locales when applying saved ttsVoice; or QtSpeech: fix system-locale
-    # equality): delete the loop that emits the en-Latn-US duplicate below
-    # and the `_DUP_EN_AS_US` flag.
-    # ────────────────────────────────────────────────────────────────────
-    _DUP_EN_AS_US = True
-    US_LANG = "en-Latn-US"
-
     one = False
     sent_langs: dict[str, int] = {}
     written: set[tuple[str, str]] = set()
@@ -590,15 +564,22 @@ def cmd_list_voices(line: str) -> None:
         sent_langs[lang] = sent_langs.get(lang, 0) + 1
         one = True
 
+    # Each voice is emitted under its true base lang. For en-* voices we
+    # also emit under bare en-US so Okular's saved-ttsVoice lookup at
+    # startup (which iterates only the default en-US current-locale
+    # bucket) can find any British voice and call setVoice() to migrate
+    # the engine locale.
+    US_LANG = "en-US"
+
     for v in voices:
         name = v["id"]
         raw_lang = v.get("language") or ""
-        lang = _with_script(raw_lang.lower()) if raw_lang else "none"
+        lang = _normalize_lang(raw_lang) if raw_lang else "none"
         # See _GENDER_TO_VARIANT comment: always "none" so the plugin
         # doesn't end up with QLocale("en-gb_male").
         variant = "none"
         _emit(name, lang, variant)
-        if _DUP_EN_AS_US and lang.lower().startswith("en-") and lang != US_LANG:
+        if lang.lower().startswith("en-") and lang != US_LANG:
             _emit(name, US_LANG, variant)
 
     if one:

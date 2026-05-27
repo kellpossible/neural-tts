@@ -60,10 +60,11 @@ mise run sync-daemon
 # 2. Install the Kokoro provider (creates providers/kokoro-onnx/.venv,
 #    downloads ~400 MB of model files into ~/.local/share/kde-tts-daemon/models/)
 mise run install-provider kokoro-onnx
-# (NVIDIA GPU only) add CUDA runtime so the provider picks the fp32 model:
-#    mise run install-provider kokoro-onnx --extra gpu --skip-models
+# (NVIDIA GPU only) add CUDA runtime + fp16-gpu model:
+#    mise run install-provider kokoro-onnx --extra gpu
 #    requires the NVIDIA driver + xorg-x11-drv-nvidia-cuda-libs (or system CUDA).
-#    Re-running with --extra gpu after a CPU install upgrades in place.
+#    Re-running with --extra gpu after a CPU install upgrades in place and
+#    downloads the GPU-quantised fp16 model that the daemon prefers on CUDA.
 
 # 3. Install the systemd units and speechd module config (no sudo needed)
 mise run install
@@ -127,7 +128,7 @@ Environment overrides (set in a service drop-in):
 
 | Var | Default | Effect |
 |---|---|---|
-| `TTS_KOKORO_MODEL_PATH` | auto (FP32 if GPU, INT8 if CPU) | Pin a specific Kokoro model file |
+| `TTS_KOKORO_MODEL_PATH` | auto (fp16-gpu on GPU, int8 on CPU) | Pin a specific Kokoro model file |
 | `TTS_KOKORO_VOICES_PATH` | `~/.local/share/kde-tts-daemon/models/voices-v1.0.bin` | Pin a voices file |
 | `KDE_TTS_LOG_LEVEL` | `INFO` | Daemon and provider log level |
 

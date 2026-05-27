@@ -18,11 +18,6 @@ from _common import die, info, models_dir, warn  # noqa: E402  (sibling import)
 # (name, url, approx_size_bytes)
 KOKORO_FILES: list[tuple[str, str, int]] = [
     (
-        "kokoro-v1.0.onnx",
-        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
-        310 * 1024 * 1024,
-    ),
-    (
         "kokoro-v1.0.int8.onnx",
         "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx",
         88 * 1024 * 1024,
@@ -34,12 +29,7 @@ KOKORO_FILES: list[tuple[str, str, int]] = [
     ),
 ]
 
-KOKORO_FP16_FILES: list[tuple[str, str, int]] = [
-    (
-        "kokoro-v1.0.fp16.onnx",
-        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.fp16.onnx",
-        169 * 1024 * 1024,
-    ),
+KOKORO_FP16_GPU_FILES: list[tuple[str, str, int]] = [
     (
         "kokoro-v1.0.fp16-gpu.onnx",
         "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.fp16-gpu.onnx",
@@ -97,17 +87,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="download_models.py")
     parser.add_argument("provider", nargs="?", default="kokoro-onnx")
     parser.add_argument(
-        "--with-fp16",
+        "--with-fp16-gpu",
         action="store_true",
-        help="Also download FP16 variants (kokoro-onnx only)",
+        help="Also download GPU FP16 variant — the daemon uses it on CUDA/ROCm",
     )
     args = parser.parse_args(argv)
 
     dest = models_dir()
     if args.provider == "kokoro-onnx":
         _fetch_set(KOKORO_FILES, dest)
-        if args.with_fp16:
-            _fetch_set(KOKORO_FP16_FILES, dest)
+        if args.with_fp16_gpu:
+            _fetch_set(KOKORO_FP16_GPU_FILES, dest)
     else:
         die(f"download_models: provider {args.provider!r} has no built-in download spec yet")
     info(f"models in {dest}")

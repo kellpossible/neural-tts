@@ -38,11 +38,12 @@ def resolve_model_paths(using_gpu: bool) -> tuple[Path, Path]:
     model_override = os.environ.get("TTS_KOKORO_MODEL_PATH")
     voices_override = os.environ.get("TTS_KOKORO_VOICES_PATH")
 
-    model_path = (
-        Path(model_override)
-        if model_override
-        else data / ("kokoro-v1.0.onnx" if using_gpu else "kokoro-v1.0.int8.onnx")
-    )
+    if model_override:
+        model_path = Path(model_override)
+    elif using_gpu:
+        model_path = data / "kokoro-v1.0.fp16-gpu.onnx"
+    else:
+        model_path = data / "kokoro-v1.0.int8.onnx"
     voices_path = Path(voices_override) if voices_override else data / "voices-v1.0.bin"
 
     if not model_path.exists():

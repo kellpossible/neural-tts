@@ -52,10 +52,15 @@ def main(argv: list[str] | None = None) -> int:
     if meta.get("needs_models", False) and not args.skip_models:
         info(f"downloading models for {args.provider}")
         env = os.environ.copy()
-        result = subprocess.run(
-            [sys.executable, str(repo_root() / "scripts" / "download_models.py"), args.provider],
-            env=env,
-        )
+        dl_cmd = [
+            sys.executable,
+            str(repo_root() / "scripts" / "download_models.py"),
+            args.provider,
+        ]
+        # `--extra gpu` implies we want the fp16-gpu model (daemon prefers it).
+        if args.provider == "kokoro-onnx" and "gpu" in args.extra:
+            dl_cmd.append("--with-fp16-gpu")
+        result = subprocess.run(dl_cmd, env=env)
         if result.returncode != 0:
             die(f"download_models failed (exit {result.returncode})", code=result.returncode)
 
