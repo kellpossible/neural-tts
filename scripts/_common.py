@@ -62,6 +62,33 @@ def load_registry() -> dict[str, dict]:
         return tomllib.load(f).get("providers", {})
 
 
+def installed_providers() -> list[str]:
+    """Names of providers whose venv exists under their project_dir."""
+    out: list[str] = []
+    for name, fields in load_registry().items():
+        venv_python = repo_root() / fields["project_dir"] / ".venv" / "bin" / "python"
+        if venv_python.exists():
+            out.append(name)
+    return out
+
+
+def enabled_providers_in_config() -> list[str] | None:
+    """Read [provider] enabled from the user's config.toml. None if missing."""
+    cfg = config_dir() / "config.toml"
+    if not cfg.exists():
+        return None
+    try:
+        with cfg.open("rb") as f:
+            raw = tomllib.load(f)
+    except tomllib.TOMLDecodeError:
+        return None
+    provider = raw.get("provider") or {}
+    enabled = provider.get("enabled")
+    if not isinstance(enabled, list):
+        return None
+    return [str(x) for x in enabled]
+
+
 def require(cmd: str, install_hint: str = "") -> Path:
     p = shutil.which(cmd)
     if not p:

@@ -45,8 +45,19 @@ async def handle_speechd_connection(
             await _send_and_close(writer, error_response("missing 'voice'"))
             return
 
+        # Auto-route via the global voice index: which provider owns this voice?
+        # If the index isn't populated yet, this triggers a one-time enumeration.
+        idx = await supervisor.ensure_voice_index_populated()
+        target_provider = idx.provider_for(synth.voice)
+        if target_provider is None:
+            await _send_and_close(writer, error_response(
+                f"unknown voice {synth.voice!r} (not found in any enabled provider; "
+                f"try `bin/neural-tts-ctl reload-voices`)"
+            ))
+            return
+
         try:
-            proc = await supervisor.ensure_ready()
+            proc = await supervisor.ensure_ready(target_provider)
         except ProviderNotInstalled as e:
             await _send_and_close(writer, error_response(str(e)))
             return
@@ -56,7 +67,15 @@ async def handle_speechd_connection(
             return
 
         if synth.voice not in {v.id for v in proc.voices}:
-            await _send_and_close(writer, error_response(f"unknown voice {synth.voice!r}"))
+            # The index said this voice was here but the actual provider disagrees —
+            # most likely a reference-clip was removed since the last enumeration.
+            log.warning(
+                "voice %r in index for %s but provider doesn't have it; "
+                "consider running reload-voices", synth.voice, target_provider,
+            )
+            await _send_and_close(writer, error_response(
+                f"voice {synth.voice!r} no longer available in {target_provider!r}"
+            ))
             return
 
         # Header: commit to streaming reply at the wire sample rate.

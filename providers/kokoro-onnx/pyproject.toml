@@ -11,7 +11,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gpu = ["onnxruntime-gpu>=1.17"]
+# `[cuda,cudnn]` pulls nvidia-{cuda-runtime,cuda-nvrtc,cufft,curand,cudnn}-cu12
+# as pip wheels (no system CUDA install needed). nvidia-cublas-cu12
+# (libcublas / libcublasLt) is also required but NOT in ORT's [cuda] extra
+# as of 1.26 — list it explicitly. Without these, onnxruntime silently
+# falls back to CPU at session creation, hiding the actual failure.
+gpu = [
+    "onnxruntime-gpu[cuda,cudnn]>=1.17",
+    "nvidia-cublas-cu12~=12.0",
+]
 
 [build-system]
 requires = ["hatchling"]

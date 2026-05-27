@@ -81,6 +81,8 @@ async def run(args: argparse.Namespace) -> int:
     supervisor = Supervisor(
         default_provider=config.provider.default,
         idle_timeout_seconds=config.supervisor.idle_timeout_seconds,
+        enabled_providers=config.provider.enabled,
+        eager_startup=config.supervisor.eager_startup,
     )
 
     adopted = _adopt_systemd_sockets()

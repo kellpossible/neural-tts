@@ -17,11 +17,10 @@ supports_cloning = true
 needs_models = true
 notes = "Zero-shot voice cloning. CUDA-only. Drop reference clips into ~/.local/share/neural-tts-daemon/voices/longcat/<id>.<en|zh>.{wav,txt}."
 
-# Future providers — uncomment when implemented and `mise run install-provider <name>` succeeds:
-#
-# [providers.moss]
-# display_name = "MOSS-TTS"
-# project_dir = "providers/moss"
-# python_module = "neural_tts_provider_moss"
-# supports_cloning = true
-# needs_models = true
+[providers.moss-tts-nano]
+display_name = "MOSS-TTS-Nano (100M, ONNX)"
+project_dir = "providers/moss-tts-nano"
+python_module = "neural_tts_provider_moss_tts_nano"
+supports_cloning = true
+needs_models = true
+notes = "Zero-shot voice cloning, CPU-friendly (claims realtime on 4 cores). Drop reference clips into ~/.local/share/neural-tts-daemon/voices/moss-tts-nano/<id>.<lang>.wav (no transcript needed)."

@@ -2,15 +2,18 @@
 
 A bridge between operating system TTS interface and various newly available TTS libraries.
 
-Currently `speech-dispatcher` on Linux is supported, with two providers:
+Currently `speech-dispatcher` on Linux is supported, with three providers:
 
 - **kokoro-onnx** — Kokoro-82M via ONNX runtime. CPU or GPU, dozens of
   pre-baked voices, multilingual.
 - **longcat-audiodit** — Meituan's [LongCat-AudioDiT](https://github.com/meituan-longcat/LongCat-AudioDiT)
   1B diffusion model. CUDA-only, zero-shot voice cloning from user-supplied
   reference clips, English + Chinese.
+- **moss-tts-nano** — OpenMOSS's [MOSS-TTS-Nano](https://github.com/OpenMOSS/MOSS-TTS-Nano)
+  100M autoregressive ONNX model. CPU-friendly (claims realtime on 4 cores),
+  zero-shot voice cloning, 20 languages.
 
-The daemon-↔-provider protocol is provider-agnostic so other engines (LongCat-AudioDiT, MOSS-TTS, …) can be plugged in later.
+The daemon-↔-provider protocol is provider-agnostic so other engines can be plugged in later.
 
 ## Why
 
@@ -39,7 +42,19 @@ KDE app → QtSpeech → speech-dispatcher → sd_generic → bin/sd-neural-tts
 - **Speechd-side wire rate**: always 24 kHz s16le mono; the daemon resamples
   on the fly via `soxr` if the active provider's native rate differs.
 - **Provider isolation**: each provider is its own uv project with its own
-  `.venv/`. Switch providers via `bin/neural-tts-ctl switch <name>`.
+  `.venv/`. Only one provider subprocess is alive at a time.
+- **Auto-routing**: the daemon keeps a persistent voice index
+  (`~/.cache/neural-tts-daemon/voice_index.json`) mapping every voice id to its
+  owning provider. The first LIST VOICES from speechd populates it by spawning
+  each enabled provider in *lazy* mode (no model load) to enumerate voices,
+  then shutting it down. On synth, the daemon looks up the voice in the index
+  and ensures the owning provider is running and warm.
+- **Lazy vs eager warmup**: providers default to lazy — they enumerate voices
+  in milliseconds, deferring model load until first synth. The daemon spawns
+  them eagerly (`--eager-startup`) for the synth path so the model is loaded
+  before any audio commitment is made to speechd. Run `bin/neural-tts-ctl
+  reload-voices` to rebuild the voice index after dropping reference clips
+  or installing a new provider.
 - **Idle eviction**: the daemon unloads its provider after
   `supervisor.idle_timeout_seconds` (default 600). Next request re-spawns.
 
@@ -95,7 +110,7 @@ select *Speech Dispatcher*, pick a kokoro voice (`af_heart`, `am_adam`, …).
 | `uninstall` | Remove user-scope unit files and module config |
 | `run` | Run daemon in the foreground (binds sockets itself) |
 | `status` | `neural-tts-ctl status` |
-| `switch-provider <name>` | Switch active provider, regenerate AddVoice block |
+| `reload-voices` | Rebuild the global voice index (re-enumerate every enabled provider) |
 | `voices` | List speechd-visible voices |
 | `logs` | `journalctl --user -u neural-tts.service -f` |
 | `test` | Run pytest |
@@ -124,12 +139,24 @@ select *Speech Dispatcher*, pick a kokoro voice (`af_heart`, `am_adam`, …).
 
 ```toml
 [provider]
-default = "kokoro-onnx"      # which provider to spawn on first request
+default = "kokoro-onnx"             # vestigial: only used when `eager_startup`
+                                    # below is true; daemon auto-routes by voice id otherwise.
+enabled = ["kokoro-onnx"]           # allowlist; providers not listed here are
+                                    # invisible to the daemon. Add other names
+                                    # (e.g. "moss-tts-nano") after installing them.
 
 [supervisor]
 idle_timeout_seconds = 600   # unload provider after this many seconds idle (0 = never)
-eager_startup = false         # spawn provider on daemon start (don't wait for first request)
+eager_startup = false        # if true, pre-spawn `provider.default` with its model
+                             # loaded at daemon start. Otherwise providers spawn
+                             # on demand when a synth request arrives.
 ```
+
+Providers are opt-in: a fresh install ships with only `kokoro-onnx` enabled.
+After running `mise run install-provider <name>`, add the name to
+`[provider] enabled` to make its voices visible to the daemon. The daemon
+routes every synth request to the owning provider via the global voice
+index — there's no manual "switch to provider X" step.
 
 Environment overrides (set in a service drop-in):
 
@@ -161,17 +188,57 @@ cp my-clip.wav ~/.local/share/neural-tts-daemon/voices/longcat/alice.en.wav
 echo "the exact words spoken in my clip" \
     > ~/.local/share/neural-tts-daemon/voices/longcat/alice.en.txt
 
-# 3. Switch the active provider and reload speechd's voice list
-bin/neural-tts-ctl switch longcat-audiodit
+# 3. Refresh the global voice index (only needed after dropping new clips)
 bin/neural-tts-ctl reload-voices
 
-# 4. Speak
+# 4. Speak — the daemon auto-routes by voice id; no explicit switch needed
 spd-say -o neural-tts -y alice "Hello world from LongCat."
 ```
 
 Limitations: English + Chinese only; the daemon's `speed` knob is ignored
 (LongCat has no native speed control); long input is sentence-chunked, so
 time-to-first-audio scales with the first chunk, not the full text.
+
+## MOSS-TTS-Nano (CPU-friendly zero-shot voice cloning)
+
+MOSS-TTS-Nano is a 100M-parameter autoregressive TTS shipped as ONNX. No
+torch GPU required at runtime — upstream claims realtime on 4 CPU cores.
+Voice cloning is zero-shot from a single reference clip; no transcript is
+needed (the model conditions on audio tokens, not text).
+
+```bash
+# 1. Install the provider — clones the pinned upstream into
+#    providers/moss-tts-nano/vendor/, creates its .venv, and downloads
+#    both ONNX repos (~few hundred MB) into ~/.local/share/neural-tts-daemon/models/.
+mise run install-provider moss-tts-nano
+#    The [gpu] extra exists but is NOT recommended for this model:
+#    a 100M-param autoregressive ONNX session on GPU loses to CPU on most
+#    hardware (per-token CUDA launches + memcpy overhead exceed the compute
+#    savings). On one local test, CPU ran 2.4× realtime; GPU ran 1.0×.
+#    To force the choice anyway: TTS_MOSS_TTS_NANO_EP=cpu|cuda (env var).
+
+# 2. Drop reference clips into the user-voices dir. Each "voice" is one wav:
+#      <voice-id>.<lang>.wav    ← 5-15 s clean reference audio
+#    lang is the short tag for one of the 20 supported languages:
+#      zh, en, de, es, fr, ja, it, hu, ko, ru, fa, ar, pl, pt, cs, da, sv, el, tr
+#    Optional sidecar:
+#      <voice-id>.<lang>.toml   ← { display_name = "...", gender = "female" }
+mkdir -p ~/.local/share/neural-tts-daemon/voices/moss-tts-nano
+cp my-clip.wav ~/.local/share/neural-tts-daemon/voices/moss-tts-nano/alice.en.wav
+
+# 3. Refresh the global voice index (only needed after dropping new clips)
+bin/neural-tts-ctl reload-voices
+
+# 4. Speak — the daemon auto-routes by voice id; no explicit switch needed
+spd-say -o neural-tts -y alice "Hello world from MOSS-TTS-Nano."
+```
+
+Limitations: the daemon's `speed` knob is ignored (no native speed control);
+input is chunked by token budget so time-to-first-audio scales with the
+first chunk; WeTextProcessing-based text normalisation is intentionally
+disabled (it requires `pynini`, which doesn't install cleanly under `uv`),
+so very heavy numeric/abbreviation input may sound less polished than via
+upstream's CLI.
 
 ## Adding another provider
 

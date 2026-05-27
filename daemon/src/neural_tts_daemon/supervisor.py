@@ -23,6 +23,7 @@ from typing import AsyncIterator
 from .config import providers_registry_path, repo_root
 from .pb import neural_tts_pb2 as pb
 from .protocol import ProtocolError, read_message, write_message
+from .voice_index import VoiceIndex
 from .voices import Voice
 
 log = logging.getLogger("neural_tts_daemon.supervisor")
@@ -127,14 +128,104 @@ class _ProviderProcess:
 class Supervisor:
     """Manages the active provider subprocess."""
 
-    def __init__(self, default_provider: str, idle_timeout_seconds: int) -> None:
+    def __init__(
+        self,
+        default_provider: str,
+        idle_timeout_seconds: int,
+        enabled_providers: list[str] | None = None,
+        eager_startup: bool = False,
+    ) -> None:
         self.default_provider = default_provider
         self.idle_timeout_seconds = idle_timeout_seconds
-        self._registry = load_registry()
+        self.eager_startup = eager_startup
+        full_registry = load_registry()
+        allowed = set(enabled_providers or [])
+        for name in allowed:
+            if name not in full_registry:
+                log.warning(
+                    "config enables unknown provider %r — ignoring (known: %s)",
+                    name, sorted(full_registry),
+                )
+        self._registry = {n: m for n, m in full_registry.items() if n in allowed}
+        if not self._registry:
+            log.warning(
+                "no providers enabled — set [provider] enabled = [...] in "
+                "~/.config/neural-tts-daemon/config.toml (known providers: %s)",
+                sorted(full_registry),
+            )
+        elif default_provider not in self._registry:
+            fallback = next(iter(self._registry))
+            log.warning(
+                "default provider %r is not in enabled list; falling back to %r",
+                default_provider, fallback,
+            )
+            self.default_provider = fallback
         self._active: _ProviderProcess | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._idle_task: asyncio.Task | None = None
         self._closing = False
+        self._voice_index = VoiceIndex(sorted(self._registry))
+        self._voice_index.load()
+
+    # ── voice index access ─────────────────────────────────────────────
+
+    def voice_index(self) -> VoiceIndex:
+        return self._voice_index
+
+    async def ensure_voice_index_populated(self) -> VoiceIndex:
+        """Populate the on-disk voice index if it's empty. Idempotent."""
+        if not self._voice_index.is_empty():
+            return self._voice_index
+        await self.enumerate_all_voices()
+        return self._voice_index
+
+    async def enumerate_all_voices(self) -> dict[str, list[Voice]]:
+        """For each enabled provider: reuse if already active+READY, otherwise
+        spawn it briefly in lazy mode, read voices from the warmup response,
+        then shut it down. Persists the union to disk."""
+        out: dict[str, list[Voice]] = {}
+        async with self._lifecycle_lock:
+            for name in sorted(self._registry):
+                meta = self._registry[name]
+                if not meta.installed:
+                    log.warning("enumerate: skipping %s (not installed)", name)
+                    continue
+                if (
+                    self._active
+                    and self._active.meta.name == name
+                    and self._active.state == ProviderState.READY
+                ):
+                    log.info(
+                        "enumerate: reusing active provider %s (%d voices)",
+                        name, len(self._active.voices),
+                    )
+                    out[name] = list(self._active.voices)
+                    continue
+                log.info("enumerate: spawning %s briefly to list voices", name)
+                spawned_here = False
+                try:
+                    await self._spawn_locked(name, eager=False)
+                    spawned_here = True
+                    assert self._active is not None
+                    out[name] = list(self._active.voices)
+                except Exception:
+                    log.exception("enumerate: provider %s failed", name)
+                finally:
+                    if spawned_here and self._active and self._active.meta.name == name:
+                        try:
+                            await self._shutdown_locked()
+                        except Exception:
+                            log.exception("enumerate: shutdown of %s failed", name)
+
+        # Populate the index from what we got.
+        self._voice_index.clear()
+        for name, voices in out.items():
+            self._voice_index.set_provider_voices(name, voices)
+        try:
+            self._voice_index.save()
+        except OSError as e:
+            log.warning("could not persist voice index: %s", e)
+        return out
 
     def known_providers(self) -> list[ProviderMeta]:
         return list(self._registry.values())
@@ -166,6 +257,13 @@ class Supervisor:
             self._idle_task = asyncio.create_task(self._idle_loop())
 
     async def ensure_ready(self, name: str | None = None) -> _ProviderProcess:
+        """Spawn `name` (or the current active or default) and load its model.
+
+        Always eager: the provider's model is fully loaded before this returns.
+        Otherwise speechd's first-audio timeout fires during a lazy model load.
+        For enumerate-only use cases see `enumerate_all_voices` which spawns
+        explicitly lazy and tears down immediately after.
+        """
         target = name or (self._active.meta.name if self._active else self.default_provider)
         async with self._lifecycle_lock:
             if (
@@ -177,7 +275,7 @@ class Supervisor:
             if self._active and self._active.meta.name != target:
                 await self._shutdown_locked()
             if not self._active or self._active.state != ProviderState.READY:
-                await self._spawn_locked(target)
+                await self._spawn_locked(target, eager=True)
             assert self._active is not None
             return self._active
 
@@ -297,14 +395,21 @@ class Supervisor:
 
     # ---- internal --------------------------------------------------------
 
-    async def _spawn_locked(self, name: str) -> None:
+    async def _spawn_locked(self, name: str, *, eager: bool | None = None) -> None:
         if name not in self._registry:
             raise ProviderUnknown(f"unknown provider {name!r}")
         meta = self._registry[name]
         if not meta.installed:
             raise ProviderNotInstalled(name)
 
-        log.info("spawning provider %s from %s", name, meta.venv_python)
+        # If the caller didn't specify, use the daemon's default.
+        if eager is None:
+            eager = self.eager_startup
+
+        log.info(
+            "spawning provider %s from %s (eager=%s)",
+            name, meta.venv_python, eager,
+        )
 
         parent_sock, child_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         child_fd = child_sock.fileno()
@@ -321,10 +426,11 @@ class Supervisor:
             env.pop("LISTEN_PID", None)
             env.pop("LISTEN_FDNAMES", None)
 
+            argv = [str(meta.venv_python), "-m", meta.python_module]
+            if eager:
+                argv.append("--eager-startup")
             process = await asyncio.create_subprocess_exec(
-                str(meta.venv_python),
-                "-m",
-                meta.python_module,
+                *argv,
                 pass_fds=(child_fd,),
                 env=env,
                 stdin=asyncio.subprocess.DEVNULL,

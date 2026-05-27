@@ -35,8 +35,8 @@ async def handle_control_connection(
         try:
             if op == "status":
                 reply = _status(supervisor)
-            elif op == "switch":
-                reply = await _switch(supervisor, request)
+            elif op == "list-voices":
+                reply = await _list_voices(supervisor)
             elif op == "reload-voices":
                 reply = await _reload_voices(supervisor)
             elif op == "list-providers":
@@ -79,34 +79,43 @@ def _write_json(writer: asyncio.StreamWriter, obj: dict) -> None:
 
 
 def _status(s: Supervisor) -> dict:
+    idx = s.voice_index()
     return {
         "ok": True,
-        "provider": s.active_name() or s.default_provider,
         "active": s.active_name(),
         "state": s.active_state().value,
-        "voices_count": len(s.active_voices()),
+        "active_voices_count": len(s.active_voices()),
         "sample_rate": s.active_sample_rate(),
         "uptime_seconds": round(s.uptime_seconds(), 2),
         "idle_for_seconds": round(s.idle_for_seconds(), 2),
         "idle_timeout_seconds": s.idle_timeout_seconds,
+        "indexed_voices_count": len(idx.all_voices()),
+        "indexed_providers": idx.known_providers(),
     }
 
 
-async def _switch(s: Supervisor, request: dict) -> dict:
-    name = request.get("provider")
-    if not isinstance(name, str) or not name:
-        return {"ok": False, "error": "missing 'provider'"}
-    await s.switch(name)
-    return {"ok": True, "active": s.active_name()}
+async def _list_voices(s: Supervisor) -> dict:
+    """Return the union of voices across enabled providers.
 
-
-async def _reload_voices(s: Supervisor) -> dict:
-    voices = await s.reload_voices()
+    Populates the index on first call by enumerating each provider; subsequent
+    calls just read the cache. Use `reload-voices` to force a refresh.
+    """
+    idx = await s.ensure_voice_index_populated()
+    voices = idx.all_voices()
     return {
         "ok": True,
         "voices_count": len(voices),
-        "voices": [v.to_json() for v in voices],
+        "voices": [
+            {**v.to_json(), "provider": idx.provider_for(v.id)}
+            for v in voices
+        ],
     }
+
+
+async def _reload_voices(s: Supervisor) -> dict:
+    """Force a fresh enumeration; the on-disk cache is overwritten."""
+    await s.enumerate_all_voices()
+    return await _list_voices(s)
 
 
 def _list_providers(s: Supervisor) -> dict:

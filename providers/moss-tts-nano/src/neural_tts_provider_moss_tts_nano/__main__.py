@@ -1,7 +1,7 @@
 """Provider entry point.
 
-Adopts the inherited socketpair on FD 3 (set by the daemon via LISTEN_FDS=1
-+ pass_fds), runs a framed protobuf request/response loop until shutdown.
+Adopts the inherited socketpair on FD given by NEURAL_TTS_PROVIDER_FD,
+runs a framed protobuf request/response loop until shutdown.
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ import numpy as np
 from google.protobuf.message import DecodeError
 
 from .pb import neural_tts_pb2 as pb
-from .provider import KokoroProvider
+from .provider import MossTtsNanoProvider
 
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 
-log = logging.getLogger("neural_tts_provider_kokoro_onnx")
+log = logging.getLogger("neural_tts_provider_moss_tts_nano")
 
 
 class _ProtocolError(Exception):
@@ -80,7 +80,7 @@ def _setup_logging() -> None:
 
 
 async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *, eager: bool) -> None:
-    provider = KokoroProvider(eager_startup=eager)
+    provider = MossTtsNanoProvider(eager_startup=eager)
     try:
         while True:
             try:
@@ -95,7 +95,7 @@ async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *, 
                     resp = await _handle_warmup(provider)
                 elif op == "synthesize":
                     await _handle_synthesize(provider, req.synthesize, writer)
-                    continue  # synthesize writes its own messages
+                    continue
                 elif op == "list_voices":
                     resp = pb.Response(
                         list_voices=pb.ListVoicesResponse(voices=provider.list_voices_pb())
@@ -121,18 +121,17 @@ async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *, 
             pass
 
 
-async def _handle_warmup(provider: KokoroProvider) -> pb.Response:
+async def _handle_warmup(provider: MossTtsNanoProvider) -> pb.Response:
     sample_rate, voices = await provider.warmup()
     return pb.Response(warmup=pb.WarmupResponse(sample_rate=sample_rate, voices=voices))
 
 
 async def _handle_synthesize(
-    provider: KokoroProvider,
+    provider: MossTtsNanoProvider,
     req: pb.SynthesizeRequest,
     writer: asyncio.StreamWriter,
 ) -> None:
     try:
-        # Header first; commits us to a streaming reply.
         _write(
             writer,
             pb.Response(
@@ -144,7 +143,7 @@ async def _handle_synthesize(
         async for samples in provider.synthesize_stream(
             voice=req.voice,
             speed=req.speed if req.speed else 1.0,
-            lang=req.lang or "en-us",
+            lang=req.lang or "en",
             text=req.text,
         ):
             arr = np.asarray(samples, dtype=np.float32, copy=False).reshape(-1)
@@ -177,11 +176,11 @@ async def run(eager: bool) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="neural-tts-provider-kokoro-onnx")
+    parser = argparse.ArgumentParser(prog="neural-tts-provider-moss-tts-nano")
     parser.add_argument(
         "--eager-startup",
         action="store_true",
-        help="Load the Kokoro model + warm ORT sessions at process start "
+        help="Load the ONNX model + warm kernels at process start "
              "(default: defer until the first synthesize request)",
     )
     args = parser.parse_args()

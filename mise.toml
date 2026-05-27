@@ -24,17 +24,32 @@ if [ "$usage_skip_models" = "true" ]; then args="$args --skip-models"; fi
 python3 scripts/install_provider.py $args
 '''
 
+[tasks.uninstall-provider]
+description = "Reset a provider: remove its venv and vendored upstream source"
+usage = '''
+arg "<provider>" help="Provider name (e.g. kokoro-onnx)"
+flag "--purge-models" help="Also delete the provider's downloaded model files"
+flag "--yes" help="Assume yes for all prompts (non-interactive)"
+'''
+run = '''
+set -e
+args="$usage_provider"
+if [ "$usage_purge_models" = "true" ]; then args="$args --purge-models"; fi
+if [ "$usage_yes" = "true" ]; then args="$args --yes"; fi
+python3 scripts/uninstall_provider.py $args
+'''
+
 [tasks.download-models]
 description = "Download model files for a provider"
 usage = '''
 arg "[provider]" help="Provider name (default: kokoro-onnx)" default="kokoro-onnx"
-flag "--with-fp16" help="Also download FP16 model variants"
+flag "--with-int8" help="Also download kokoro INT8 model (smaller but slower on modern CPUs)"
 '''
 run = '''
 set -e
 provider="${usage_provider:-kokoro-onnx}"
 extra=""
-if [ "$usage_with_fp16" = "true" ]; then extra="--with-fp16"; fi
+if [ "$usage_with_int8" = "true" ]; then extra="--with-int8"; fi
 python3 scripts/download_models.py "$provider" $extra
 '''
 
@@ -64,16 +79,9 @@ run = "daemon/.venv/bin/python -m neural_tts_daemon --foreground"
 description = "Show daemon status via the control socket"
 run = "bin/neural-tts-ctl status"
 
-[tasks.switch-provider]
-description = "Switch the active TTS provider"
-usage = '''
-arg "<provider>" help="Provider name to switch to"
-'''
-run = '''
-set -e
-bin/neural-tts-ctl switch "$usage_provider"
-pkill -u "$USER" -f '^/usr/bin/speech-dispatcher' 2>/dev/null || true
-'''
+[tasks.reload-voices]
+description = "Rebuild the global voice index (the daemon spawns each enabled provider briefly to enumerate)"
+run = "bin/neural-tts-ctl reload-voices"
 
 [tasks.voices]
 description = "Show current voices known to speech-dispatcher"
@@ -108,6 +116,10 @@ daemon/.venv/bin/python -m grpc_tools.protoc -Iproto \
 daemon/.venv/bin/python -m grpc_tools.protoc -Iproto \
     --python_out=providers/longcat-audiodit/src/neural_tts_provider_longcat_audiodit/pb \
     --pyi_out=providers/longcat-audiodit/src/neural_tts_provider_longcat_audiodit/pb \
+    proto/neural_tts.proto
+daemon/.venv/bin/python -m grpc_tools.protoc -Iproto \
+    --python_out=providers/moss-tts-nano/src/neural_tts_provider_moss_tts_nano/pb \
+    --pyi_out=providers/moss-tts-nano/src/neural_tts_provider_moss_tts_nano/pb \
     proto/neural_tts.proto
 echo "Regenerated neural_tts_pb2.py in all provider packages."
 '''

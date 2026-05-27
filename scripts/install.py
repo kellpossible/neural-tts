@@ -21,6 +21,7 @@ from _common import (  # noqa: E402
     daemon_python,
     die,
     info,
+    installed_providers,
     load_registry,
     render_template,
     repo_root,
@@ -90,14 +91,25 @@ def seed_daemon_config() -> None:
         info(f"daemon config already at {cfg} (leaving as-is)")
         return
     cfg.parent.mkdir(parents=True, exist_ok=True)
+    # Pre-populate `enabled` from whatever provider venvs already exist on disk.
+    # Falls back to ["kokoro-onnx"] so a brand-new install (no providers yet)
+    # still has a sensible default that matches the quickstart instructions.
+    detected = installed_providers()
+    enabled = detected or ["kokoro-onnx"]
+    default = "kokoro-onnx" if "kokoro-onnx" in enabled else enabled[0]
+    enabled_toml = ", ".join(f'"{n}"' for n in enabled)
     cfg.write_text(
         "[provider]\n"
-        'default = "kokoro-onnx"\n\n'
+        f'default = "{default}"\n'
+        '# Allowlist — only providers named here are visible to the daemon.\n'
+        '# Add others (e.g. "longcat-audiodit", "moss-tts-nano") after\n'
+        '# running `mise run install-provider <name>`.\n'
+        f"enabled = [{enabled_toml}]\n\n"
         "[supervisor]\n"
         "idle_timeout_seconds = 600\n"
         "eager_startup = false\n"
     )
-    info(f"  wrote {cfg}")
+    info(f"  wrote {cfg} (enabled: {', '.join(enabled)})")
 
 
 def install_speechd_module_conf() -> None:

@@ -54,22 +54,13 @@ def _cmd_status(args) -> int:
     if not reply.get("ok"):
         print(f"error: {reply.get('error')}", file=sys.stderr)
         return 1
-    print(f"provider:       {reply['provider']}")
     print(f"active:         {reply['active'] or '(not running)'}")
     print(f"state:          {reply['state']}")
-    print(f"voices:         {reply['voices_count']}")
+    print(f"active voices:  {reply['active_voices_count']}")
     print(f"sample rate:    {reply['sample_rate']} Hz")
     print(f"uptime:         {reply['uptime_seconds']:.1f}s")
     print(f"idle:           {reply['idle_for_seconds']:.1f}s / {reply['idle_timeout_seconds']}s")
-    return 0
-
-
-def _cmd_switch(args) -> int:
-    reply = _round_trip(args.socket, {"op": "switch", "provider": args.provider})
-    if not reply.get("ok"):
-        print(f"error: {reply.get('error')}", file=sys.stderr)
-        return 1
-    print(f"switched to {reply['active']}")
+    print(f"indexed voices: {reply['indexed_voices_count']} ({', '.join(reply['indexed_providers']) or 'none cached'})")
     return 0
 
 
@@ -78,7 +69,7 @@ def _cmd_reload_voices(args) -> int:
     if not reply.get("ok"):
         print(f"error: {reply.get('error')}", file=sys.stderr)
         return 1
-    print(f"reloaded {reply['voices_count']} voices")
+    print(f"reloaded {reply['voices_count']} voices across {len({v.get('provider') for v in reply.get('voices', [])})} provider(s)")
     return 0
 
 
@@ -114,18 +105,16 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("status", help="Show daemon and active-provider status")
-
-    p_switch = sub.add_parser("switch", help="Switch the active provider")
-    p_switch.add_argument("provider")
-
-    sub.add_parser("reload-voices", help="Re-enumerate voices from the active provider")
+    sub.add_parser(
+        "reload-voices",
+        help="Re-enumerate voices across every enabled provider (rebuilds the on-disk index)",
+    )
     sub.add_parser("list-providers", help="List known providers and their install state")
 
     args = parser.parse_args(argv)
 
     handlers = {
         "status": _cmd_status,
-        "switch": _cmd_switch,
         "reload-voices": _cmd_reload_voices,
         "list-providers": _cmd_list_providers,
     }

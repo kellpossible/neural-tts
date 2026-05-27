@@ -35,6 +35,11 @@ WIRE_SAMPLE_RATE = 24_000
 @dataclass
 class ProviderConfig:
     default: str = "kokoro-onnx"
+    # Allowlist of providers the daemon will surface. Providers not listed
+    # here are invisible — `switch` rejects them, `known_providers` omits
+    # them. An empty list means nothing is enabled; the daemon will refuse
+    # to spawn until the user adds at least one provider here.
+    enabled: list[str] = field(default_factory=list)
 
 
 @dataclass

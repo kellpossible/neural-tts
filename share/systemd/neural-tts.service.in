@@ -12,12 +12,14 @@ Environment=PYTHONUNBUFFERED=1
 
 # Sandboxing — the daemon needs read access to the repo (provider venvs live
 # under it) and the user data dir (model files). It needs to write under
-# ~/.config/speech-dispatcher (regenerating the AddVoice block) and
+# ~/.config/speech-dispatcher (regenerating the AddVoice block),
+# ~/.cache/neural-tts-daemon (provider scratch space — e.g. moss-tts-nano
+# upstream wants an output_dir to mkdir at __init__ even if unused), and
 # $XDG_RUNTIME_DIR (the sockets).
 ProtectSystem=strict
 ProtectHome=read-only
 ReadOnlyPaths=@REPO@ %h/.local/share/neural-tts-daemon
-ReadWritePaths=%t %h/.config/neural-tts-daemon %h/.config/speech-dispatcher
+ReadWritePaths=%t %h/.config/neural-tts-daemon %h/.config/speech-dispatcher %h/.cache/neural-tts-daemon
 PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectKernelTunables=yes

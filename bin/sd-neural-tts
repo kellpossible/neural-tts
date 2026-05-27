@@ -482,8 +482,13 @@ def _find_voice_for_slot(slot: str, lang_pref: str) -> str | None:
 def _refresh_voices(force: bool = False) -> list[dict]:
     if not force and STATE.voices_cache and time.monotonic() - STATE.voices_cache_time < 60.0:
         return STATE.voices_cache
+    # `list-voices` returns the union across all enabled providers from the
+    # daemon's cached voice index, populating it lazily on first call.
+    # `force` here means "ignore our 60 s local cache"; to force the daemon
+    # to re-enumerate from disk, call `bin/neural-tts-ctl reload-voices`.
+    op = "list-voices"
     try:
-        reply = control_request({"op": "reload-voices"})
+        reply = control_request({"op": op})
         if reply.get("ok") and "voices" in reply:
             STATE.voices_cache = reply["voices"]
             STATE.voices_cache_time = time.monotonic()
