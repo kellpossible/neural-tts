@@ -1,13 +1,13 @@
 [Unit]
 Description=KDE TTS daemon
-Requires=kde-tts.socket kde-tts-control.socket
-After=kde-tts.socket kde-tts-control.socket
+Requires=neural-tts.socket neural-tts-control.socket
+After=neural-tts.socket neural-tts-control.socket
 
 [Service]
 Type=notify
 NotifyAccess=main
 WorkingDirectory=@REPO@
-ExecStart=@DAEMON_PY@ -m kde_tts_daemon
+ExecStart=@DAEMON_PY@ -m neural_tts_daemon
 Environment=PYTHONUNBUFFERED=1
 
 # Sandboxing — the daemon needs read access to the repo (provider venvs live
@@ -16,8 +16,8 @@ Environment=PYTHONUNBUFFERED=1
 # $XDG_RUNTIME_DIR (the sockets).
 ProtectSystem=strict
 ProtectHome=read-only
-ReadOnlyPaths=@REPO@ %h/.local/share/kde-tts-daemon
-ReadWritePaths=%t %h/.config/kde-tts-daemon %h/.config/speech-dispatcher
+ReadOnlyPaths=@REPO@ %h/.local/share/neural-tts-daemon
+ReadWritePaths=%t %h/.config/neural-tts-daemon %h/.config/speech-dispatcher
 PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectKernelTunables=yes

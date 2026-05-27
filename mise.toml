@@ -3,7 +3,7 @@ uv = "latest"
 python = "3.12"
 
 [env]
-KDE_TTS_REPO_ROOT = "{{ config_root }}"
+NEURAL_TTS_REPO_ROOT = "{{ config_root }}"
 
 [tasks.sync-daemon]
 description = "Create/update the daemon venv (numpy, soxr, protobuf + dev tools)"
@@ -58,11 +58,11 @@ run = "python3 scripts/uninstall.py"
 [tasks.run]
 description = "Run the daemon in the foreground (no socket activation)"
 depends = ["sync-daemon"]
-run = "daemon/.venv/bin/python -m kde_tts_daemon --foreground"
+run = "daemon/.venv/bin/python -m neural_tts_daemon --foreground"
 
 [tasks.status]
 description = "Show daemon status via the control socket"
-run = "bin/kde-tts-ctl status"
+run = "bin/neural-tts-ctl status"
 
 [tasks.switch-provider]
 description = "Switch the active TTS provider"
@@ -71,7 +71,7 @@ arg "<provider>" help="Provider name to switch to"
 '''
 run = '''
 set -e
-bin/kde-tts-ctl switch "$usage_provider"
+bin/neural-tts-ctl switch "$usage_provider"
 pkill -u "$USER" -f '^/usr/bin/speech-dispatcher' 2>/dev/null || true
 '''
 
@@ -79,13 +79,13 @@ pkill -u "$USER" -f '^/usr/bin/speech-dispatcher' 2>/dev/null || true
 description = "Show current voices known to speech-dispatcher"
 run = '''
 set -e
-bin/kde-tts-ctl status
+bin/neural-tts-ctl status
 spd-say -o neural-tts --list-synthesis-voices || true
 '''
 
 [tasks.logs]
 description = "Follow daemon journal"
-run = "journalctl --user -u kde-tts.service -f"
+run = "journalctl --user -u neural-tts.service -f"
 
 [tasks.test]
 description = "Run unit and integration tests"
@@ -93,17 +93,17 @@ depends = ["sync-daemon"]
 run = "daemon/.venv/bin/python -m pytest -v tests/"
 
 [tasks.gen-proto]
-description = "Regenerate *_pb2.py from proto/kde_tts.proto"
+description = "Regenerate *_pb2.py from proto/neural_tts.proto"
 depends = ["sync-daemon"]
 run = '''
 set -e
 daemon/.venv/bin/python -m grpc_tools.protoc -Iproto \
-    --python_out=daemon/src/kde_tts_daemon/pb \
-    --pyi_out=daemon/src/kde_tts_daemon/pb \
-    proto/kde_tts.proto
+    --python_out=daemon/src/neural_tts_daemon/pb \
+    --pyi_out=daemon/src/neural_tts_daemon/pb \
+    proto/neural_tts.proto
 daemon/.venv/bin/python -m grpc_tools.protoc -Iproto \
-    --python_out=providers/kokoro-onnx/src/kde_tts_provider_kokoro_onnx/pb \
-    --pyi_out=providers/kokoro-onnx/src/kde_tts_provider_kokoro_onnx/pb \
-    proto/kde_tts.proto
-echo "Regenerated kde_tts_pb2.py in both packages."
+    --python_out=providers/kokoro-onnx/src/neural_tts_provider_kokoro_onnx/pb \
+    --pyi_out=providers/kokoro-onnx/src/neural_tts_provider_kokoro_onnx/pb \
+    proto/neural_tts.proto
+echo "Regenerated neural_tts_pb2.py in both packages."
 '''

@@ -1,0 +1,12 @@
+[Unit]
+Description=KDE TTS daemon control socket
+PartOf=neural-tts.service
+
+[Socket]
+ListenStream=%t/neural-tts-control.sock
+SocketMode=0600
+FileDescriptorName=neural-tts-control
+Service=neural-tts.service
+
+[Install]
+WantedBy=sockets.target

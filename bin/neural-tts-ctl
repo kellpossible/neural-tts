@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""kde-tts-ctl — control-socket client. Pure stdlib; works under any Python 3.11+."""
+"""neural-tts-ctl — control-socket client. Pure stdlib; works under any Python 3.11+."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import struct
 import sys
 
 DEFAULT_SOCKET = os.environ.get(
-    "KDE_TTS_CONTROL_SOCKET",
-    f"{os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')}/kde-tts-control.sock",
+    "NEURAL_TTS_CONTROL_SOCKET",
+    f"{os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')}/neural-tts-control.sock",
 )
 
 
@@ -21,10 +21,10 @@ def _round_trip(sock_path: str, request: dict) -> dict:
     try:
         sock.connect(sock_path)
     except FileNotFoundError:
-        print(f"kde-tts-ctl: control socket {sock_path} not present", file=sys.stderr)
+        print(f"neural-tts-ctl: control socket {sock_path} not present", file=sys.stderr)
         sys.exit(1)
     except ConnectionRefusedError as e:
-        print(f"kde-tts-ctl: cannot connect: {e}", file=sys.stderr)
+        print(f"neural-tts-ctl: cannot connect: {e}", file=sys.stderr)
         sys.exit(1)
     try:
         raw = json.dumps(request, separators=(",", ":")).encode("utf-8")
@@ -109,7 +109,7 @@ def _cmd_list_providers(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="kde-tts-ctl")
+    parser = argparse.ArgumentParser(prog="neural-tts-ctl")
     parser.add_argument("--socket", default=DEFAULT_SOCKET)
     sub = parser.add_subparsers(dest="cmd", required=True)
 

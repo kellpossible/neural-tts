@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download model files for a provider into ~/.local/share/kde-tts-daemon/models/.
+"""Download model files for a provider into ~/.local/share/neural-tts-daemon/models/.
 
 Idempotent: skips files that already exist with the expected size (±5%).
 Downloads to <name>.partial and atomically renames on completion.

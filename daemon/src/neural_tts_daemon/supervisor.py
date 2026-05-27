@@ -21,11 +21,11 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from .config import providers_registry_path, repo_root
-from .pb import kde_tts_pb2 as pb
+from .pb import neural_tts_pb2 as pb
 from .protocol import ProtocolError, read_message, write_message
 from .voices import Voice
 
-log = logging.getLogger("kde_tts_daemon.supervisor")
+log = logging.getLogger("neural_tts_daemon.supervisor")
 
 
 class ProviderState(enum.Enum):
@@ -311,11 +311,11 @@ class Supervisor:
         try:
             env = {
                 **os.environ,
-                "KDE_TTS_PROVIDER_FD": str(child_fd),
+                "NEURAL_TTS_PROVIDER_FD": str(child_fd),
                 "PYTHONUNBUFFERED": "1",
             }
             # Strip systemd-side socket-activation vars; our daemon↔provider
-            # channel uses KDE_TTS_PROVIDER_FD rather than LISTEN_FDS so we
+            # channel uses NEURAL_TTS_PROVIDER_FD rather than LISTEN_FDS so we
             # don't have to fight CPython's post-preexec _close_open_fds pass.
             env.pop("LISTEN_FDS", None)
             env.pop("LISTEN_PID", None)

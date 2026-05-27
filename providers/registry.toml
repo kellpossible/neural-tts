@@ -4,7 +4,7 @@
 [providers.kokoro-onnx]
 display_name = "Kokoro (ONNX)"
 project_dir = "providers/kokoro-onnx"
-python_module = "kde_tts_provider_kokoro_onnx"
+python_module = "neural_tts_provider_kokoro_onnx"
 supports_cloning = false
 needs_models = true
 notes = "Auto-selects FP32 model on GPU, INT8 on CPU."
@@ -14,13 +14,13 @@ notes = "Auto-selects FP32 model on GPU, INT8 on CPU."
 # [providers.longcat]
 # display_name = "LongCat AudioDiT"
 # project_dir = "providers/longcat"
-# python_module = "kde_tts_provider_longcat"
+# python_module = "neural_tts_provider_longcat"
 # supports_cloning = true
 # needs_models = true
 #
 # [providers.moss]
 # display_name = "MOSS-TTS"
 # project_dir = "providers/moss"
-# python_module = "kde_tts_provider_moss"
+# python_module = "neural_tts_provider_moss"
 # supports_cloning = true
 # needs_models = true

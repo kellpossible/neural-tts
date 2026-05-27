@@ -1,4 +1,4 @@
-"""Module entry point: `python -m kde_tts_daemon`."""
+"""Module entry point: `python -m neural_tts_daemon`."""
 
 import sys
 

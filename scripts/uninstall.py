@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reverse the install. Removes user-scope unit files and the speechd module config.
 
-Leaves `~/.local/share/kde-tts-daemon/` (models, cloned voices) and provider
+Leaves `~/.local/share/neural-tts-daemon/` (models, cloned voices) and provider
 venvs intact — those are user data, deleted explicitly by the user if desired.
 """
 
@@ -45,13 +45,13 @@ def main(argv: list[str] | None = None) -> int:
             "--user",
             "disable",
             "--now",
-            "kde-tts.socket",
-            "kde-tts-control.socket",
-            "kde-tts.service",
+            "neural-tts.socket",
+            "neural-tts-control.socket",
+            "neural-tts.service",
         ]
     )
 
-    for name in ("kde-tts.service", "kde-tts.socket", "kde-tts-control.socket"):
+    for name in ("neural-tts.service", "neural-tts.socket", "neural-tts-control.socket"):
         f = systemd_user_dir() / name
         if f.exists():
             info(f"  removing {f}")
@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         targets = _candidate_addmodule_lines(text)
         if any(t in text for t in targets):
             if confirm(
-                f"Remove the kde-tts AddModule line(s) from {user_conf}?",
+                f"Remove the neural-tts AddModule line(s) from {user_conf}?",
                 default_no=False,
             ):
                 new_lines = []
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
                     if line.strip() in targets:
                         skip_next_blank = True
                         continue
-                    if line.strip() == "# Added by kde-tts-daemon installer":
+                    if line.strip() == "# Added by neural-tts-daemon installer":
                         skip_next_blank = True
                         continue
                     if skip_next_blank and not line.strip():
@@ -98,8 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     info("uninstall complete")
     warn(
         "models and config files left in:\n"
-        f"  ~/.config/kde-tts-daemon/\n"
-        f"  ~/.local/share/kde-tts-daemon/\n"
+        f"  ~/.config/neural-tts-daemon/\n"
+        f"  ~/.local/share/neural-tts-daemon/\n"
         f"  providers/*/.venv\n"
         f"Remove manually if you want to fully clean up."
     )

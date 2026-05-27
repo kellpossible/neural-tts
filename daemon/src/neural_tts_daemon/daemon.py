@@ -24,7 +24,7 @@ from .supervisor import Supervisor
 
 SD_LISTEN_FDS_START = 3
 
-log = logging.getLogger("kde_tts_daemon")
+log = logging.getLogger("neural_tts_daemon")
 
 
 def _adopt_systemd_sockets() -> dict[str, socket.socket]:
@@ -52,7 +52,7 @@ def _adopt_systemd_sockets() -> dict[str, socket.socket]:
 
 
 def _setup_logging() -> None:
-    level = os.environ.get("KDE_TTS_LOG_LEVEL", "INFO").upper()
+    level = os.environ.get("NEURAL_TTS_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -88,10 +88,10 @@ async def run(args: argparse.Namespace) -> int:
     control_sock: socket.socket | None = None
 
     if adopted:
-        speechd_sock = adopted.get("kde-tts")
-        control_sock = adopted.get("kde-tts-control")
+        speechd_sock = adopted.get("neural-tts")
+        control_sock = adopted.get("neural-tts-control")
         if speechd_sock is None or control_sock is None:
-            log.error("expected both 'kde-tts' and 'kde-tts-control' FDs; got %s", list(adopted))
+            log.error("expected both 'neural-tts' and 'neural-tts-control' FDs; got %s", list(adopted))
             return 1
     elif args.foreground:
         SPEECHD_SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +163,7 @@ def _make_unix_listener(path: Path) -> socket.socket:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="kde-tts-daemon")
+    parser = argparse.ArgumentParser(prog="neural-tts-daemon")
     parser.add_argument(
         "--foreground",
         action="store_true",

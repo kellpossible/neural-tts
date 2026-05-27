@@ -24,7 +24,7 @@ FAKE_PROVIDER = textwrap.dedent(
     """
     import asyncio, os, socket, struct, sys
     sys.path.insert(0, str(__import__('pathlib').Path(r'{repo}') / 'daemon' / 'src'))
-    from kde_tts_daemon.pb import kde_tts_pb2 as pb
+    from neural_tts_daemon.pb import neural_tts_pb2 as pb
 
     async def serve(sock):
         loop = asyncio.get_running_loop()
@@ -71,7 +71,7 @@ FAKE_PROVIDER = textwrap.dedent(
         writer.write(struct.pack('>I', len(raw)))
         writer.write(raw)
 
-    fd = int(os.environ['KDE_TTS_PROVIDER_FD'])
+    fd = int(os.environ['NEURAL_TTS_PROVIDER_FD'])
     sock = socket.socket(fileno=fd)
     sock.setblocking(False)
     asyncio.run(serve(sock))
@@ -113,7 +113,7 @@ def registry_override(tmp_path, fake_provider_dir, monkeypatch):
         f'needs_models = false\n'
     )
     # Patch config.providers_registry_path to point at our fake registry.
-    from kde_tts_daemon import config as cfg
+    from neural_tts_daemon import config as cfg
     monkeypatch.setattr(cfg, "providers_registry_path", lambda: reg)
     # Also need to override repo_root so that registry's "project_dir" resolves to the absolute path
     monkeypatch.setattr(cfg, "repo_root", lambda: tmp_path)
@@ -128,7 +128,7 @@ def test_supervisor_spawn_warmup_synth_shutdown(registry_override, fake_provider
     pythonpath = str(fake_provider_dir / "src")
     os.environ["PYTHONPATH"] = pythonpath + ":" + os.environ.get("PYTHONPATH", "")
     try:
-        from kde_tts_daemon.supervisor import Supervisor, ProviderState
+        from neural_tts_daemon.supervisor import Supervisor, ProviderState
 
         async def run():
             sup = Supervisor(default_provider="fake", idle_timeout_seconds=0)

@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
             die(f"download_models failed (exit {result.returncode})", code=result.returncode)
 
     info(f"provider {args.provider} installed.")
-    info("Next: `mise run install` (if you haven't yet) then `bin/kde-tts-ctl switch " f"{args.provider}` if the daemon is already running.")
+    info("Next: `mise run install` (if you haven't yet) then `bin/neural-tts-ctl switch " f"{args.provider}` if the daemon is already running.")
     return 0
 
 

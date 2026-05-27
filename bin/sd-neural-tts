@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """sd-neural-tts — speech-dispatcher native output module.
 
-Bridges speech-dispatcher's module protocol to kde-tts-daemon.
-Replaces sd_generic + bin/kde-tts-say with a long-running process that
+Bridges speech-dispatcher's module protocol to neural-tts-daemon.
+Replaces sd_generic + a per-utterance CLI with a long-running process that
 exposes every provider voice (no canonical-slot bucketing).
 
 speechd module protocol (stdin commands → stdout responses):
@@ -63,14 +63,14 @@ from dataclasses import dataclass, field
 from google.protobuf.message import DecodeError
 import langcodes
 
-from kde_tts_daemon.pb import kde_tts_pb2 as pb
+from neural_tts_daemon.pb import neural_tts_pb2 as pb
 
 # ── Config / constants ───────────────────────────────────────────────────
 
 XDG_RUNTIME = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-SYNTH_SOCKET_PATH = os.environ.get("KDE_TTS_SOCKET", f"{XDG_RUNTIME}/kde-tts.sock")
+SYNTH_SOCKET_PATH = os.environ.get("NEURAL_TTS_SOCKET", f"{XDG_RUNTIME}/neural-tts.sock")
 CONTROL_SOCKET_PATH = os.environ.get(
-    "KDE_TTS_CONTROL_SOCKET", f"{XDG_RUNTIME}/kde-tts-control.sock"
+    "NEURAL_TTS_CONTROL_SOCKET", f"{XDG_RUNTIME}/neural-tts-control.sock"
 )
 WIRE_RATE = 24_000
 PAPLAY_CMD = [
@@ -381,7 +381,7 @@ def cmd_init() -> None:
             status.get("voices_count"),
         )
     except (FileNotFoundError, ConnectionRefusedError) as e:
-        write_line(f"399-cannot reach kde-tts-daemon control socket at {CONTROL_SOCKET_PATH}: {e}")
+        write_line(f"399-cannot reach neural-tts-daemon control socket at {CONTROL_SOCKET_PATH}: {e}")
         write_line("399 ERR CANT INIT MODULE")
         sys.exit(1)
     except Exception as e:
@@ -390,7 +390,7 @@ def cmd_init() -> None:
         write_line("399 ERR CANT INIT MODULE")
         sys.exit(1)
 
-    write_line("299-kde-tts-daemon reachable")
+    write_line("299-neural-tts-daemon reachable")
     write_line("299 OK LOADED SUCCESSFULLY")
 
 

@@ -1,11 +1,11 @@
 [Unit]
 Description=KDE TTS daemon synthesis socket
-PartOf=kde-tts.service
+PartOf=neural-tts.service
 
 [Socket]
-ListenStream=%t/kde-tts.sock
+ListenStream=%t/neural-tts.sock
 SocketMode=0600
-FileDescriptorName=kde-tts
+FileDescriptorName=neural-tts
 
 [Install]
 WantedBy=sockets.target

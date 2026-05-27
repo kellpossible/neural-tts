@@ -8,11 +8,11 @@ from typing import AsyncIterator
 import numpy as np
 
 from .engine import build_kokoro
-from .pb import kde_tts_pb2 as pb
+from .pb import neural_tts_pb2 as pb
 
-log = logging.getLogger("kde_tts_provider_kokoro_onnx.provider")
+log = logging.getLogger("neural_tts_provider_kokoro_onnx.provider")
 
-# Mirrors daemon/src/kde_tts_daemon/voices.py: KOKORO_PREFIX_MAP.
+# Mirrors daemon/src/neural_tts_daemon/voices.py: KOKORO_PREFIX_MAP.
 # Duplicated to avoid cross-venv imports — if you change one, change the other.
 _PREFIX_MAP: dict[str, tuple[str, int]] = {
     "af": ("en-US", pb.FEMALE), "am": ("en-US", pb.MALE),

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import onnxruntime
 
-log = logging.getLogger("kde_tts_provider_kokoro_onnx.engine")
+log = logging.getLogger("neural_tts_provider_kokoro_onnx.engine")
 
 GPU_PROVIDERS = (
     "CUDAExecutionProvider",
@@ -21,7 +21,7 @@ CPU_PROVIDER = "CPUExecutionProvider"
 def _data_dir() -> Path:
     base = os.environ.get("XDG_DATA_HOME")
     root = Path(base) if base else Path.home() / ".local/share"
-    return root / "kde-tts-daemon"
+    return root / "neural-tts-daemon"
 
 
 def select_provider() -> tuple[str, bool]:

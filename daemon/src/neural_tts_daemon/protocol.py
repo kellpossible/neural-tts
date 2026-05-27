@@ -4,7 +4,7 @@ Wire format on every socket in the system:
     [4 bytes big-endian uint32 N]
     [N bytes: a serialized protobuf Message]
 
-The proto schema is at proto/kde_tts.proto. Generated code lives in
+The proto schema is at proto/neural_tts.proto. Generated code lives in
 this package's `pb/` subpackage.
 """
 
@@ -16,7 +16,7 @@ from typing import Type, TypeVar
 
 from google.protobuf.message import DecodeError, Message
 
-from .pb import kde_tts_pb2 as pb
+from .pb import neural_tts_pb2 as pb
 
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 

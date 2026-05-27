@@ -1,7 +1,7 @@
 """Control socket handler — length-prefixed JSON (not protobuf).
 
 The synth socket uses protobuf for the performance-critical PCM path; the
-control socket stays JSON so kde-tts-ctl can be a stdlib-only system-python
+control socket stays JSON so neural-tts-ctl can be a stdlib-only system-python
 script with no protobuf dependency.
 """
 
@@ -14,7 +14,7 @@ import struct
 
 from .supervisor import ProviderNotInstalled, ProviderUnknown, Supervisor
 
-log = logging.getLogger("kde_tts_daemon.control")
+log = logging.getLogger("neural_tts_daemon.control")
 
 MAX_CONTROL_FRAME = 64 * 1024
 

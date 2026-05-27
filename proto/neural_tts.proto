@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package kde_tts.v1;
+package neural_tts.v1;
 
 // Wire format used on every Unix socket in this project.
 //

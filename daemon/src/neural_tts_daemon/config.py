@@ -19,15 +19,15 @@ XDG_CONFIG_HOME = _xdg("XDG_CONFIG_HOME", ".config")
 XDG_DATA_HOME = _xdg("XDG_DATA_HOME", ".local/share")
 XDG_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
 
-CONFIG_DIR = XDG_CONFIG_HOME / "kde-tts-daemon"
-DATA_DIR = XDG_DATA_HOME / "kde-tts-daemon"
+CONFIG_DIR = XDG_CONFIG_HOME / "neural-tts-daemon"
+DATA_DIR = XDG_DATA_HOME / "neural-tts-daemon"
 MODELS_DIR = DATA_DIR / "models"
 VOICES_DIR = DATA_DIR / "voices"
 
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
-SPEECHD_SOCKET_PATH = XDG_RUNTIME_DIR / "kde-tts.sock"
-CONTROL_SOCKET_PATH = XDG_RUNTIME_DIR / "kde-tts-control.sock"
+SPEECHD_SOCKET_PATH = XDG_RUNTIME_DIR / "neural-tts.sock"
+CONTROL_SOCKET_PATH = XDG_RUNTIME_DIR / "neural-tts-control.sock"
 
 WIRE_SAMPLE_RATE = 24_000
 
@@ -63,8 +63,8 @@ class DaemonConfig:
 def repo_root() -> Path:
     """Locate the repository root from the daemon's installed location.
 
-    The daemon is invoked as `<repo>/daemon/.venv/bin/python -m kde_tts_daemon`,
-    so we walk up from this file: daemon/src/kde_tts_daemon/config.py -> repo.
+    The daemon is invoked as `<repo>/daemon/.venv/bin/python -m neural_tts_daemon`,
+    so we walk up from this file: daemon/src/neural_tts_daemon/config.py -> repo.
     """
     return Path(__file__).resolve().parents[3]
 

@@ -72,14 +72,14 @@ def install_unit_files() -> None:
 
     src = repo_root() / "share" / "systemd"
     # Copy both socket units verbatim.
-    for name in ("kde-tts.socket", "kde-tts-control.socket"):
+    for name in ("neural-tts.socket", "neural-tts-control.socket"):
         dst = unit_dir / name
         dst.write_text((src / name).read_text())
         info(f"  wrote {dst}")
     # Render the service template.
-    svc_tpl = (src / "kde-tts.service.in").read_text()
+    svc_tpl = (src / "neural-tts.service.in").read_text()
     svc = render_template(svc_tpl, REPO=str(repo_root()), DAEMON_PY=str(daemon_python()))
-    dst = unit_dir / "kde-tts.service"
+    dst = unit_dir / "neural-tts.service"
     dst.write_text(svc)
     info(f"  wrote {dst}")
 
@@ -139,7 +139,7 @@ def patch_speechd_conf() -> None:
             if line.strip() == _LEGACY_ADD_MODULE_LINE:
                 skip_next_blank = True
                 continue
-            if line.strip() == "# Added by kde-tts-daemon installer":
+            if line.strip() == "# Added by neural-tts-daemon installer":
                 skip_next_blank = True
                 continue
             if skip_next_blank and not line.strip():
@@ -165,7 +165,7 @@ def patch_speechd_conf() -> None:
         return
 
     with user_conf.open("a") as f:
-        f.write(f"\n# Added by kde-tts-daemon installer\n{add_module}\n")
+        f.write(f"\n# Added by neural-tts-daemon installer\n{add_module}\n")
     info("  appended AddModule line")
 
 
@@ -178,8 +178,8 @@ def systemd_enable() -> None:
             "--user",
             "enable",
             "--now",
-            "kde-tts.socket",
-            "kde-tts-control.socket",
+            "neural-tts.socket",
+            "neural-tts-control.socket",
         ],
         check=True,
     )
@@ -218,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     refresh_speechd()
 
     info("install complete")
-    info("verify with: `bin/kde-tts-ctl status` and `spd-say -o neural-tts 'hello'`")
+    info("verify with: `bin/neural-tts-ctl status` and `spd-say -o neural-tts 'hello'`")
     return 0
 
 

@@ -8,8 +8,8 @@ import struct
 
 import pytest
 
-from kde_tts_daemon.pb import kde_tts_pb2 as pb
-from kde_tts_daemon.protocol import (
+from neural_tts_daemon.pb import neural_tts_pb2 as pb
+from neural_tts_daemon.protocol import (
     ProtocolError,
     audio_chunk_response,
     audio_end_response,

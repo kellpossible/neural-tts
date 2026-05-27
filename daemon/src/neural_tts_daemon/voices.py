@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 # Kokoro voice-prefix → (speechd-language, gender) reference.
 # Kept here for documentation; the actual provider-side mapping lives in
-# providers/kokoro-onnx/src/kde_tts_provider_kokoro_onnx/provider.py because
+# providers/kokoro-onnx/src/neural_tts_provider_kokoro_onnx/provider.py because
 # venv isolation precludes importing across packages.
 KOKORO_PREFIX_MAP: dict[str, tuple[str, str]] = {
     "af": ("en-US", "FEMALE"),

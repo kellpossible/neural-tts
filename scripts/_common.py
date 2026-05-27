@@ -22,7 +22,7 @@ def xdg_data_home() -> Path:
 
 
 def data_dir() -> Path:
-    return xdg_data_home() / "kde-tts-daemon"
+    return xdg_data_home() / "neural-tts-daemon"
 
 
 def models_dir() -> Path:
@@ -30,7 +30,7 @@ def models_dir() -> Path:
 
 
 def config_dir() -> Path:
-    return xdg_config_home() / "kde-tts-daemon"
+    return xdg_config_home() / "neural-tts-daemon"
 
 
 def systemd_user_dir() -> Path:

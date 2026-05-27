@@ -16,12 +16,12 @@ import sys
 import numpy as np
 from google.protobuf.message import DecodeError
 
-from .pb import kde_tts_pb2 as pb
+from .pb import neural_tts_pb2 as pb
 from .provider import KokoroProvider
 
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 
-log = logging.getLogger("kde_tts_provider_kokoro_onnx")
+log = logging.getLogger("neural_tts_provider_kokoro_onnx")
 
 
 class _ProtocolError(Exception):
@@ -53,15 +53,15 @@ def _write(writer: asyncio.StreamWriter, msg: pb.Response) -> None:
 
 
 def _adopt_socket() -> socket.socket:
-    fd_str = os.environ.get("KDE_TTS_PROVIDER_FD")
+    fd_str = os.environ.get("NEURAL_TTS_PROVIDER_FD")
     if not fd_str:
         raise SystemExit(
-            "provider must be launched by kde-tts-daemon (KDE_TTS_PROVIDER_FD expected)"
+            "provider must be launched by neural-tts-daemon (NEURAL_TTS_PROVIDER_FD expected)"
         )
     try:
         fd = int(fd_str)
     except ValueError:
-        raise SystemExit(f"KDE_TTS_PROVIDER_FD must be an integer, got {fd_str!r}")
+        raise SystemExit(f"NEURAL_TTS_PROVIDER_FD must be an integer, got {fd_str!r}")
     sock = socket.socket(fileno=fd)
     if sock.family != socket.AF_UNIX or sock.type != socket.SOCK_STREAM:
         raise SystemExit(f"inherited FD {fd} is not a SOCK_STREAM AF_UNIX socket")
@@ -70,7 +70,7 @@ def _adopt_socket() -> socket.socket:
 
 
 def _setup_logging() -> None:
-    level = os.environ.get("KDE_TTS_LOG_LEVEL", "INFO").upper()
+    level = os.environ.get("NEURAL_TTS_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

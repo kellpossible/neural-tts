@@ -8,7 +8,7 @@ import logging
 import numpy as np
 
 from .config import WIRE_SAMPLE_RATE
-from .pb import kde_tts_pb2 as pb
+from .pb import neural_tts_pb2 as pb
 from .protocol import (
     ProtocolError,
     audio_chunk_response,
@@ -20,7 +20,7 @@ from .protocol import (
 from .resample import Resampler, float32_to_s16le_bytes
 from .supervisor import ProviderNotInstalled, Supervisor
 
-log = logging.getLogger("kde_tts_daemon.proxy")
+log = logging.getLogger("neural_tts_daemon.proxy")
 
 
 async def handle_speechd_connection(

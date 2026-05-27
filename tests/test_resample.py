@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from kde_tts_daemon.resample import Resampler, float32_to_s16le_bytes
+from neural_tts_daemon.resample import Resampler, float32_to_s16le_bytes
 
 
 def test_passthrough_when_rates_match():
