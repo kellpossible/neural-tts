@@ -1,0 +1,12 @@
+[Unit]
+Description=KDE TTS daemon control socket
+PartOf=kde-tts.service
+
+[Socket]
+ListenStream=%t/kde-tts-control.sock
+SocketMode=0600
+FileDescriptorName=kde-tts-control
+Service=kde-tts.service
+
+[Install]
+WantedBy=sockets.target

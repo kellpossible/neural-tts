@@ -1,0 +1,11 @@
+[Unit]
+Description=KDE TTS daemon synthesis socket
+PartOf=kde-tts.service
+
+[Socket]
+ListenStream=%t/kde-tts.sock
+SocketMode=0600
+FileDescriptorName=kde-tts
+
+[Install]
+WantedBy=sockets.target

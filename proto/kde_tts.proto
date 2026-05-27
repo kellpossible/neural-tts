@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package kde_tts.v1;
+
+// Wire format used on every Unix socket in this project.
+//
+// Framing (transport-level, not proto):
+//   [4 bytes big-endian uint32 N]
+//   [N bytes: serialized Request or Response]
+//
+// One framed message per protobuf Message. Streaming responses (e.g. synthesize)
+// are a header Response followed by zero or more AudioChunk Responses followed
+// by exactly one AudioEnd Response.
+
+enum Gender {
+  GENDER_UNSPECIFIED = 0;
+  MALE = 1;
+  FEMALE = 2;
+  NEUTRAL = 3;
+}
+
+message Voice {
+  string id = 1;
+  string language = 2;          // BCP-47 ish, e.g. "en-US", "ja"
+  Gender gender = 3;
+  string display_name = 4;
+}
+
+// ---- Requests ----
+
+message WarmupRequest {}
+
+message SynthesizeRequest {
+  string voice = 1;
+  float speed = 2;              // 0.5..2.0
+  string lang = 3;
+  string text = 4;
+}
+
+message ListVoicesRequest {}
+
+message ShutdownRequest {}
+
+// Voice-cloning ops (declared now; only used when a cloning-capable provider lands)
+message RegisterClonedVoiceRequest {
+  string id = 1;
+  string display_name = 2;
+  string language = 3;
+  bytes reference_audio_wav = 4;
+}
+
+message RemoveClonedVoiceRequest {
+  string id = 1;
+}
+
+message Request {
+  oneof op {
+    WarmupRequest warmup = 1;
+    SynthesizeRequest synthesize = 2;
+    ListVoicesRequest list_voices = 3;
+    ShutdownRequest shutdown = 4;
+    RegisterClonedVoiceRequest register_cloned_voice = 5;
+    RemoveClonedVoiceRequest remove_cloned_voice = 6;
+  }
+}
+
+// ---- Responses ----
+
+message Error {
+  string message = 1;
+}
+
+message WarmupResponse {
+  int32 sample_rate = 1;        // provider's native PCM rate
+  repeated Voice voices = 2;
+}
+
+message SynthesizeResponseHeader {
+  int32 sample_rate = 1;        // PCM rate of subsequent AudioChunks
+}
+
+message AudioChunk {
+  // Provider-to-daemon: float32 little-endian at provider's native sample rate.
+  // Daemon-to-client (speechd side): s16 little-endian at 24 kHz.
+  bytes pcm = 1;
+}
+
+message AudioEnd {}
+
+message ListVoicesResponse {
+  repeated Voice voices = 1;
+}
+
+message ShutdownResponse {}
+
+message RegisterClonedVoiceResponse {
+  Voice voice = 1;
+}
+
+message RemoveClonedVoiceResponse {}
+
+message Response {
+  oneof body {
+    Error error = 1;
+    WarmupResponse warmup = 2;
+    SynthesizeResponseHeader synthesize_header = 3;
+    AudioChunk audio_chunk = 4;
+    AudioEnd audio_end = 5;
+    ListVoicesResponse list_voices = 6;
+    ShutdownResponse shutdown = 7;
+    RegisterClonedVoiceResponse register_cloned_voice = 8;
+    RemoveClonedVoiceResponse remove_cloned_voice = 9;
+  }
+}

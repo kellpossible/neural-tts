@@ -1,0 +1,35 @@
+[Unit]
+Description=KDE TTS daemon
+Requires=kde-tts.socket kde-tts-control.socket
+After=kde-tts.socket kde-tts-control.socket
+
+[Service]
+Type=notify
+NotifyAccess=main
+WorkingDirectory=@REPO@
+ExecStart=@DAEMON_PY@ -m kde_tts_daemon
+Environment=PYTHONUNBUFFERED=1
+
+# Sandboxing — the daemon needs read access to the repo (provider venvs live
+# under it) and the user data dir (model files). It needs to write under
+# ~/.config/speech-dispatcher (regenerating the AddVoice block) and
+# $XDG_RUNTIME_DIR (the sockets).
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=@REPO@ %h/.local/share/kde-tts-daemon
+ReadWritePaths=%t %h/.config/kde-tts-daemon %h/.config/speech-dispatcher
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+# onnxruntime JITs; do not set MemoryDenyWriteExecute.
+
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=15
+
+[Install]
+WantedBy=default.target

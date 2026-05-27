@@ -1,0 +1,21 @@
+[project]
+name = "kde-tts-provider-kokoro-onnx"
+version = "0.1.0"
+description = "Kokoro ONNX TTS provider for kde-tts-daemon"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "kokoro-onnx>=0.4.0",
+    "onnxruntime>=1.17",
+    "numpy>=1.26",
+    "protobuf>=5.27",
+]
+
+[project.optional-dependencies]
+gpu = ["onnxruntime-gpu>=1.17"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kde_tts_provider_kokoro_onnx"]

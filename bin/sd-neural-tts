@@ -1,0 +1,753 @@
+#!/usr/bin/env python3
+"""sd-neural-tts — speech-dispatcher native output module.
+
+Bridges speech-dispatcher's module protocol to kde-tts-daemon.
+Replaces sd_generic + bin/kde-tts-say with a long-running process that
+exposes every provider voice (no canonical-slot bucketing).
+
+speechd module protocol (stdin commands → stdout responses):
+
+  INIT
+      → 299-<msg>\\n299 OK LOADED SUCCESSFULLY  (or 399-... / 399 ERR ...)
+
+  SET\\n VAR=val\\n VAR=val\\n .\\n
+      → 203 OK RECEIVING SETTINGS  then  203 OK SETTINGS RECEIVED
+
+  AUDIO\\n VAR=val\\n .\\n
+      → 207 OK RECEIVING AUDIO SETTINGS  then  203 OK AUDIO INITIALIZED
+
+  LOGLEVEL\\n VAR=val\\n .\\n
+      → 207 OK RECEIVING LOGLEVEL SETTINGS  then  203 OK LOGLEVEL SET
+
+  SPEAK\\n  <text...>\\n .\\n
+      → 200 OK SPEAKING immediately, then 701 BEGIN ... 702 END asynchronously
+
+  STOP\\n           → no response; speech aborts; speech thread emits 703 STOP
+  PAUSE\\n          → not supported (kokoro is not pause-resumable); ignore
+  LIST VOICES\\n    → 200-name\\tlang\\tvariant lines, then 200 OK VOICE LIST SENT
+  DEBUG ON path | DEBUG OFF
+                    → 200 OK DEBUGGING ON/OFF
+  QUIT\\n           → 210 OK QUIT, then exit
+"""
+
+# ── Self-relaunch into the daemon's venv so protobuf is on sys.path ──
+import os
+import sys
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parent.parent
+_VENV = _REPO / "daemon" / ".venv"
+_DAEMON_PY = _VENV / "bin" / "python"
+# Detect by sys.prefix, not sys.executable: when uv hard-links the same
+# interpreter binary used by the venv, comparing resolved executable paths
+# yields a false positive and we end up running base-python (no venv
+# site-packages). sys.prefix is venv-aware and is the reliable signal.
+if Path(sys.prefix).resolve() != _VENV.resolve():
+    os.execv(str(_DAEMON_PY), [str(_DAEMON_PY), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+# From here we're running under daemon/.venv/bin/python.
+sys.path.insert(0, str(_REPO / "daemon" / "src"))
+
+import json
+import logging
+import re
+import signal
+import socket
+import struct
+import subprocess
+import threading
+import time
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+
+from google.protobuf.message import DecodeError
+import langcodes
+
+from kde_tts_daemon.pb import kde_tts_pb2 as pb
+
+# ── Config / constants ───────────────────────────────────────────────────
+
+XDG_RUNTIME = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+SYNTH_SOCKET_PATH = os.environ.get("KDE_TTS_SOCKET", f"{XDG_RUNTIME}/kde-tts.sock")
+CONTROL_SOCKET_PATH = os.environ.get(
+    "KDE_TTS_CONTROL_SOCKET", f"{XDG_RUNTIME}/kde-tts-control.sock"
+)
+WIRE_RATE = 24_000
+PAPLAY_CMD = [
+    "paplay",
+    "--raw",
+    "--rate=24000",
+    "--format=s16le",
+    "--channels=1",
+]
+MAX_FRAME = 16 * 1024 * 1024
+
+
+# ── Logging to stderr only — stdout is the speechd protocol channel ──
+
+logging.basicConfig(
+    level=os.environ.get("SD_NEURAL_TTS_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s sd-neural-tts %(levelname)s %(message)s",
+    stream=sys.stderr,
+)
+log = logging.getLogger("sd-neural-tts")
+
+
+_STDOUT_LOCK = threading.Lock()
+
+
+def write_line(line: str) -> None:
+    """Write one protocol line to speechd over stdout (thread-safe)."""
+    with _STDOUT_LOCK:
+        sys.stdout.write(line.rstrip("\n") + "\n")
+        sys.stdout.flush()
+
+
+def read_line() -> str | None:
+    """Read one line from speechd. Returns None on EOF."""
+    line = sys.stdin.readline()
+    if not line:
+        return None
+    return line
+
+
+def read_until_dot() -> list[str]:
+    """Read a multi-line block terminated by `.\\n`. Strips the dot."""
+    out: list[str] = []
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            log.warning("read_until_dot: EOF mid-body after %d lines", len(out))
+            break
+        if line == ".\n" or line.rstrip("\r\n") == ".":
+            break
+        if line.startswith(".."):
+            line = line[1:]
+        out.append(line)
+    return out
+
+
+# ── Daemon clients ───────────────────────────────────────────────────────
+
+
+def control_request(req: dict) -> dict:
+    """Round-trip a JSON request on the control socket."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(CONTROL_SOCKET_PATH)
+    try:
+        raw = json.dumps(req, separators=(",", ":")).encode("utf-8")
+        s.sendall(struct.pack(">I", len(raw)) + raw)
+        s.shutdown(socket.SHUT_WR)
+        head = _recv_exact(s, 4)
+        (length,) = struct.unpack(">I", head)
+        body = _recv_exact(s, length)
+        return json.loads(body.decode("utf-8"))
+    finally:
+        s.close()
+
+
+def _recv_exact(s: socket.socket, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk:
+            raise IOError("short read from daemon")
+        buf += chunk
+    return bytes(buf)
+
+
+SYNTH_SOCKET_TIMEOUT = 60.0  # any single recv that takes longer aborts the synth
+
+
+class SynthConnection:
+    """One Unix-socket connection to the daemon's synth socket per request."""
+
+    def __init__(self) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(SYNTH_SOCKET_TIMEOUT)
+        self.sock.connect(SYNTH_SOCKET_PATH)
+
+    def send_request(self, voice: str, speed: float, lang: str, text: str) -> None:
+        req = pb.Request(
+            synthesize=pb.SynthesizeRequest(voice=voice, speed=speed, lang=lang, text=text)
+        )
+        raw = req.SerializeToString()
+        self.sock.sendall(struct.pack(">I", len(raw)) + raw)
+        self.sock.shutdown(socket.SHUT_WR)
+
+    def read_response(self) -> pb.Response:
+        (length,) = struct.unpack(">I", _recv_exact(self.sock, 4))
+        if length == 0 or length > MAX_FRAME:
+            raise IOError(f"bad frame length: {length}")
+        raw = _recv_exact(self.sock, length)
+        msg = pb.Response()
+        try:
+            msg.ParseFromString(raw)
+        except DecodeError as e:
+            raise IOError(f"protobuf decode failed: {e}") from e
+        return msg
+
+    def close(self) -> None:
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+# ── Module state ─────────────────────────────────────────────────────────
+
+
+@dataclass
+class ModuleState:
+    voice_name: str = "af_heart"     # speechd's "synthesis_voice_name"
+    slot_request: str | None = None  # legacy SSML voice slot (FEMALE1/MALE2/...)
+    explicit_voice_name: bool = False  # True once synthesis_voice has been set
+    rate: int = 0                    # speechd rate [-100, 100]
+    pitch: int = 0                   # speechd pitch [-100, 100] (ignored by kokoro)
+    volume: int = 0                  # speechd volume [-100, 100] (ignored)
+    language: str = "en-us"
+    ssml_mode: bool = False
+    voices_cache: list[dict] = field(default_factory=list)
+    voices_cache_time: float = 0.0
+
+    def speed(self) -> float:
+        r = max(-100, min(100, int(self.rate)))
+        return 1.0 + r / 200.0  # rate -100 → 0.5x, +100 → 1.5x
+
+    def resolve_slot(self) -> None:
+        """Update voice_name based on slot_request + language (if no explicit voice)."""
+        if self.explicit_voice_name or not self.slot_request:
+            return
+        match = _find_voice_for_slot(self.slot_request, self.language)
+        if match:
+            self.voice_name = match
+
+
+STATE = ModuleState()
+
+
+# ── Speech worker (one active at a time) ─────────────────────────────────
+
+
+class SpeechWorker:
+    """Runs one synth in a background thread; STOP terminates it cleanly."""
+
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+        self._paplay: subprocess.Popen | None = None
+        self._conn: SynthConnection | None = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+
+    @property
+    def busy(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self, text: str) -> None:
+        if self.busy:
+            log.warning("SPEAK while already speaking; stopping previous first")
+            self.stop()
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, args=(text,), daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stop.set()
+            if self._conn is not None:
+                self._conn.close()
+            if self._paplay is not None:
+                try:
+                    self._paplay.terminate()
+                except ProcessLookupError:
+                    pass
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)
+
+    def _run(self, text: str) -> None:
+        write_line("701 BEGIN")
+        stopped = False
+        try:
+            log.info("worker: launching paplay + opening daemon socket")
+            with self._lock:
+                self._paplay = subprocess.Popen(PAPLAY_CMD, stdin=subprocess.PIPE)
+                self._conn = SynthConnection()
+
+            voice = STATE.voice_name
+            speed = STATE.speed()
+            lang = STATE.language or "en-us"
+            log.info("worker: synth request voice=%s speed=%.2f lang=%s", voice, speed, lang)
+
+            self._conn.send_request(voice=voice, speed=speed, lang=lang, text=text)
+            log.info("worker: waiting for synth header")
+            header = self._conn.read_response()
+            log.info("worker: got header body=%s", header.WhichOneof("body"))
+            body = header.WhichOneof("body")
+            if body == "error":
+                log.error("daemon refused synth: %s", header.error.message)
+                stopped = True
+                return
+            if body != "synthesize_header":
+                log.error("unexpected daemon response: %s", body)
+                stopped = True
+                return
+
+            paplay_stdin = self._paplay.stdin
+            assert paplay_stdin is not None
+            n_chunks = 0
+            n_bytes = 0
+            while not self._stop.is_set():
+                try:
+                    resp = self._conn.read_response()
+                except (IOError, OSError) as e:
+                    log.warning("worker: daemon connection lost after %d chunks: %s", n_chunks, e)
+                    stopped = True
+                    break
+                body = resp.WhichOneof("body")
+                if body == "audio_chunk":
+                    n_chunks += 1
+                    n_bytes += len(resp.audio_chunk.pcm)
+                    try:
+                        paplay_stdin.write(resp.audio_chunk.pcm)
+                        paplay_stdin.flush()
+                    except (BrokenPipeError, OSError) as e:
+                        log.warning("worker: paplay stdin broken after %d chunks: %s", n_chunks, e)
+                        stopped = True
+                        break
+                elif body == "audio_end":
+                    log.info("worker: audio_end after %d chunks, %d bytes", n_chunks, n_bytes)
+                    break
+                elif body == "error":
+                    log.warning("worker: daemon error mid-stream: %s", resp.error.message)
+                    stopped = True
+                    break
+                else:
+                    log.warning("worker: unexpected mid-stream body: %s", body)
+
+            log.info("worker: closing paplay stdin and waiting")
+            try:
+                paplay_stdin.close()
+            except OSError:
+                pass
+            try:
+                rc = self._paplay.wait(timeout=10.0)
+                log.info("worker: paplay exited with %s", rc)
+            except subprocess.TimeoutExpired:
+                log.warning("worker: paplay didn't exit in 10s; terminating")
+                self._paplay.terminate()
+                try:
+                    self._paplay.wait(timeout=3.0)
+                except subprocess.TimeoutExpired:
+                    self._paplay.kill()
+        except Exception:
+            log.exception("speech worker failed")
+            stopped = True
+        finally:
+            with self._lock:
+                if self._conn is not None:
+                    self._conn.close()
+                    self._conn = None
+                self._paplay = None
+            if self._stop.is_set() or stopped:
+                log.info("worker: emitting 703 STOP (stop_event=%s stopped=%s)", self._stop.is_set(), stopped)
+                write_line("703 STOP")
+            else:
+                log.info("worker: emitting 702 END")
+                write_line("702 END")
+
+
+WORKER = SpeechWorker()
+
+
+# ── Command handlers ─────────────────────────────────────────────────────
+
+
+def cmd_init() -> None:
+    """Verify the daemon is reachable; report success/failure to speechd."""
+    try:
+        status = control_request({"op": "status"})
+        if not status.get("ok"):
+            write_line("399-daemon control returned not-ok: " + str(status.get("error")))
+            write_line("399 ERR CANT INIT MODULE")
+            sys.exit(1)
+        log.info(
+            "daemon ok: provider=%s state=%s voices=%s",
+            status.get("provider"),
+            status.get("state"),
+            status.get("voices_count"),
+        )
+    except (FileNotFoundError, ConnectionRefusedError) as e:
+        write_line(f"399-cannot reach kde-tts-daemon control socket at {CONTROL_SOCKET_PATH}: {e}")
+        write_line("399 ERR CANT INIT MODULE")
+        sys.exit(1)
+    except Exception as e:
+        log.exception("init failed")
+        write_line(f"399-{type(e).__name__}: {e}")
+        write_line("399 ERR CANT INIT MODULE")
+        sys.exit(1)
+
+    write_line("299-kde-tts-daemon reachable")
+    write_line("299 OK LOADED SUCCESSFULLY")
+
+
+def cmd_set() -> None:
+    write_line("203 OK RECEIVING SETTINGS")
+    for line in read_until_dot():
+        if "=" not in line:
+            continue
+        var, _, val = line.partition("=")
+        var = var.strip()
+        val = val.rstrip("\r\n")
+        _apply_setting(var, val)
+    # Resolve voice slot now that all SET fields (including language) are applied.
+    STATE.resolve_slot()
+    write_line("203 OK SETTINGS RECEIVED")
+
+
+def cmd_audio() -> None:
+    write_line("207 OK RECEIVING AUDIO SETTINGS")
+    # We don't use speechd's audio routing — we pipe to paplay ourselves.
+    read_until_dot()
+    write_line("203 OK AUDIO INITIALIZED")
+
+
+def cmd_loglevel() -> None:
+    write_line("207 OK RECEIVING LOGLEVEL SETTINGS")
+    read_until_dot()
+    write_line("203 OK LOGLEVEL SET")
+
+
+def _apply_setting(var: str, val: str) -> None:
+    if var == "rate":
+        try:
+            STATE.rate = int(val)
+        except ValueError:
+            pass
+    elif var == "pitch":
+        try:
+            STATE.pitch = int(val)
+        except ValueError:
+            pass
+    elif var == "volume":
+        try:
+            STATE.volume = int(val)
+        except ValueError:
+            pass
+    elif var == "language":
+        STATE.language = _strip_script(val) or "en-us"
+    elif var == "synthesis_voice":
+        # Voice picked by name (the third arg of AddVoice / SPDVoice.name).
+        # speechd sends "NULL" / "none" / "" when no voice override is set.
+        if val and val.lower() not in ("none", "null", ""):
+            STATE.voice_name = val
+            STATE.explicit_voice_name = True
+        else:
+            STATE.explicit_voice_name = False
+    elif var == "voice":
+        # Legacy SSML voice slot (MALE1/FEMALE2/etc). The actual mapping to a
+        # voice id happens after the whole SET block, when language is known.
+        STATE.slot_request = val.upper() if val else None
+    elif var == "ssml_mode":
+        STATE.ssml_mode = val.lower() in ("on", "true", "1", "yes")
+
+
+def _find_voice_for_slot(slot: str, lang_pref: str) -> str | None:
+    """Try to map a legacy slot like FEMALE1 to a real voice id from the daemon."""
+    voices = _refresh_voices(force=False)
+    candidates = []
+    for v in voices:
+        if v.get("gender") and slot.startswith(v["gender"]):
+            candidates.append(v)
+    if not candidates:
+        return None
+    # Try to honor language preference
+    for v in candidates:
+        if v.get("language", "").lower() == (lang_pref or "").lower():
+            return v["id"]
+    return candidates[0]["id"]
+
+
+def _refresh_voices(force: bool = False) -> list[dict]:
+    if not force and STATE.voices_cache and time.monotonic() - STATE.voices_cache_time < 60.0:
+        return STATE.voices_cache
+    try:
+        reply = control_request({"op": "reload-voices"})
+        if reply.get("ok") and "voices" in reply:
+            STATE.voices_cache = reply["voices"]
+            STATE.voices_cache_time = time.monotonic()
+    except Exception:
+        log.exception("voice refresh failed")
+    return STATE.voices_cache
+
+
+_GENDER_TO_VARIANT = {
+    "MALE": "male",
+    "FEMALE": "female",
+    "NEUTRAL": "neutral",
+}
+
+def _with_script(lang: str) -> str:
+    """Add script subtag for QtSpeech locale matching. "en-gb" -> "en-Latn-GB".
+
+    QtSpeech-speechd's connectToSpeechDispatcher() calls setLocale(QLocale()),
+    which constructs a QLocale that includes the script. QLocale("en-gb")
+    has script=AnyScript and doesn't compare equal to QLocale(English, Latn,
+    UK), so m_voices.values(systemLocale) misses our voices. Emitting the
+    script via langcodes.maximize() fixes the storage key.
+    """
+    if not lang or lang == "none":
+        return lang
+    try:
+        return langcodes.Language.get(lang).maximize().to_tag()
+    except (langcodes.LanguageTagError, ValueError):
+        return lang
+
+
+def _strip_script(lang: str) -> str:
+    """Drop the script subtag, return lowercase. "en-Latn-US" -> "en-us".
+
+    Inverse of _with_script: speechd clients (QtSpeech) sometimes send
+    SET language=en-Latn-US (because that's our advertised locale). Kokoro's
+    espeak phonemizer only understands the short form, so normalize before
+    forwarding to the daemon.
+    """
+    if not lang:
+        return lang
+    try:
+        return langcodes.Language.get(lang).simplify_script().to_tag().lower()
+    except (langcodes.LanguageTagError, ValueError):
+        return lang.lower()
+
+
+def cmd_list_voices(line: str) -> None:
+    # Optional: LIST VOICES <lang> <variant>
+    parts = line.strip().split()
+    requested_lang = parts[2] if len(parts) >= 3 else None
+    requested_variant = parts[3] if len(parts) >= 4 else None
+    log.info(
+        "LIST VOICES (lang=%s variant=%s)", requested_lang, requested_variant
+    )
+
+    voices = _refresh_voices(force=True)
+    if not voices:
+        log.warning("LIST VOICES: no voices from daemon")
+        write_line("304 CANT LIST VOICES")
+        return
+
+    # ── HACK: duplicate non-US English voices under en-Latn-US ─────────────
+    #
+    # QtSpeech-speechd's connectToSpeechDispatcher() picks an initial locale
+    # by calling setLocale(QLocale()), then setLocale(QLocale().language()) on
+    # failure. Both paths have known Qt6 quirks:
+    #
+    #   1. QLocale() (== QLocale::system()) carries hidden "system override"
+    #      state, so it never compares equal to any QLocale constructed from
+    #      a string. m_voices.values(systemLocale) returns empty → fails.
+    #   2. QLocale(QLocale::English) resolves to en_US (Qt's CLDR default for
+    #      English). On any English-locale system the engine ends up at en_US.
+    #
+    # Okular reads its saved ttsVoice as a string and matches against
+    # speech->availableVoices() (current-locale only). So a saved British
+    # voice is never found, the picker stays en-US, and the user is stuck.
+    #
+    # Workaround: also advertise every en-* voice under en-Latn-US so
+    # Okular's en_US iteration finds all English voices. Audio still works
+    # correctly — the daemon synthesizes whichever voice id Okular sends
+    # back via SET synthesis_voice=<name>, regardless of locale.
+    #
+    # **To revert** once the upstream bug is fixed (Okular: iterate all
+    # locales when applying saved ttsVoice; or QtSpeech: fix system-locale
+    # equality): delete the loop that emits the en-Latn-US duplicate below
+    # and the `_DUP_EN_AS_US` flag.
+    # ────────────────────────────────────────────────────────────────────
+    _DUP_EN_AS_US = True
+    US_LANG = "en-Latn-US"
+
+    one = False
+    sent_langs: dict[str, int] = {}
+    written: set[tuple[str, str]] = set()
+
+    def _emit(name: str, lang: str, variant: str) -> None:
+        nonlocal one
+        key = (name, lang)
+        if key in written:
+            return
+        written.add(key)
+        if requested_lang:
+            req_l = requested_lang.lower()
+            if req_l != lang.lower():
+                req_short = req_l.split("-", 1)[0]
+                v_short = lang.lower().split("-", 1)[0]
+                if req_short != v_short:
+                    return
+            if requested_variant and requested_variant.lower() != variant.lower():
+                return
+        write_line(f"200-{name}\t{lang}\t{variant}")
+        sent_langs[lang] = sent_langs.get(lang, 0) + 1
+        one = True
+
+    for v in voices:
+        name = v["id"]
+        raw_lang = v.get("language") or ""
+        lang = _with_script(raw_lang.lower()) if raw_lang else "none"
+        # See _GENDER_TO_VARIANT comment: always "none" so the plugin
+        # doesn't end up with QLocale("en-gb_male").
+        variant = "none"
+        _emit(name, lang, variant)
+        if _DUP_EN_AS_US and lang.lower().startswith("en-") and lang != US_LANG:
+            _emit(name, US_LANG, variant)
+
+    if one:
+        breakdown = ", ".join(f"{l}={n}" for l, n in sorted(sent_langs.items()))
+        log.info("LIST VOICES: sent %d voices (%s)", sum(sent_langs.values()), breakdown)
+        write_line("200 OK VOICE LIST SENT")
+    else:
+        log.warning("LIST VOICES: no matching voices (filter mismatch)")
+        write_line("304 CANT LIST VOICES")
+
+
+_LOOKS_LIKE_XML = re.compile(r"^\s*<")
+
+
+def _extract_ssml_text(body: str) -> str:
+    """Parse SSML and return concatenated text content.
+
+    speechd wraps every utterance in <speak>...</speak> even when ssml_mode is
+    off. We parse that with ElementTree (handles nested tags, attributes, and
+    XML entities correctly) and walk the tree extracting all text content.
+
+    Semantic SSML (break, prosody rate/pitch, voice switch, emphasis) is
+    currently ignored — kokoro takes plain text. Implementing those would
+    require splitting the utterance into segments, doing per-segment synth
+    with adjusted parameters, and stitching the audio. Future work.
+    """
+    if not _LOOKS_LIKE_XML.match(body):
+        return body
+    payload = body
+    # If the document isn't already rooted at <speak>, wrap it so the parser
+    # accepts fragments. Belt-and-braces: also disable entity expansion to
+    # avoid xml.etree's deprecation paths on unusual entities.
+    stripped = payload.lstrip()
+    if not stripped.startswith("<speak"):
+        payload = f"<speak>{payload}</speak>"
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError as e:
+        log.warning("SSML parse failed (%s); falling back to tag-strip", e)
+        return re.sub(r"<[^>]+>", "", body)
+    parts: list[str] = []
+
+    def walk(elem: ET.Element) -> None:
+        if elem.text:
+            parts.append(elem.text)
+        for child in elem:
+            walk(child)
+            if child.tail:
+                parts.append(child.tail)
+
+    walk(root)
+    return "".join(parts)
+
+
+def cmd_speak() -> None:
+    # speechd waits for 202 before sending the body. Missing this hangs the
+    # whole pipeline.
+    write_line("202 OK RECEIVING MESSAGE")
+    body_lines = read_until_dot()
+    raw = "".join(body_lines).rstrip("\n")
+    text = _extract_ssml_text(raw).strip()
+    log.info(
+        "SPEAK: %d→%d chars (ssml_mode=%s, preview=%r)",
+        len(raw), len(text), STATE.ssml_mode, text[:80],
+    )
+    if not text:
+        write_line("200 OK SPEAKING")
+        write_line("701 BEGIN")
+        write_line("702 END")
+        return
+    write_line("200 OK SPEAKING")
+    WORKER.start(text)
+
+
+def cmd_stop() -> None:
+    if WORKER.busy:
+        WORKER.stop()
+
+
+def cmd_pause() -> None:
+    # Kokoro is not pause-resumable mid-stream. Treat as stop.
+    cmd_stop()
+
+
+def cmd_debug(line: str) -> None:
+    parts = line.strip().split()
+    if len(parts) >= 2 and parts[1] == "ON":
+        write_line("200 OK DEBUGGING ON")
+    elif len(parts) >= 2 and parts[1] == "OFF":
+        write_line("200 OK DEBUGGING OFF")
+    else:
+        write_line("303 ERR BAD SYNTAX")
+
+
+def cmd_quit() -> None:
+    if WORKER.busy:
+        WORKER.stop()
+    write_line("210 OK QUIT")
+    sys.exit(0)
+
+
+# ── Main loop ────────────────────────────────────────────────────────────
+
+
+def main() -> int:
+    # Ignore SIGPIPE so a closed paplay stdin doesn't kill us.
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+    # argv[1] is our config file path (if any). We don't need it.
+    line = read_line()
+    if line is None:
+        return 0
+    if line != "INIT\n":
+        sys.stderr.write(f"sd-neural-tts: expected INIT, got {line!r}\n")
+        return 3
+    cmd_init()
+
+    while True:
+        line = read_line()
+        if line is None:
+            log.info("stdin EOF; exiting main loop")
+            return 0
+        log.info("← cmd: %r", line.rstrip())
+        if line == "SPEAK\n":
+            cmd_speak()
+        elif line == "STOP\n":
+            cmd_stop()
+        elif line == "PAUSE\n":
+            cmd_pause()
+        elif line == "QUIT\n":
+            cmd_quit()
+            return 0
+        elif line == "SET\n":
+            cmd_set()
+        elif line == "AUDIO\n":
+            cmd_audio()
+        elif line == "LOGLEVEL\n":
+            cmd_loglevel()
+        elif line.startswith("LIST VOICES"):
+            cmd_list_voices(line)
+        elif line.startswith("DEBUG"):
+            cmd_debug(line)
+        else:
+            log.warning("unknown command line: %r", line)
+            write_line("300 ERR UNKNOWN COMMAND")
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)

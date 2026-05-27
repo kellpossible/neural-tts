@@ -1,0 +1,109 @@
+[tools]
+uv = "latest"
+python = "3.12"
+
+[env]
+KDE_TTS_REPO_ROOT = "{{ config_root }}"
+
+[tasks.sync-daemon]
+description = "Create/update the daemon venv (numpy, soxr, protobuf + dev tools)"
+run = "cd daemon && uv sync --extra dev"
+
+[tasks.install-provider]
+description = "Install a provider venv (creates its .venv and downloads model files)"
+usage = '''
+arg "<provider>" help="Provider name (e.g. kokoro-onnx)"
+flag "--extra <extra>" help="uv extras to enable (e.g. gpu)"
+flag "--skip-models" help="Skip the model download step"
+'''
+run = '''
+set -e
+args="$usage_provider"
+if [ -n "$usage_extra" ]; then args="$args --extra $usage_extra"; fi
+if [ "$usage_skip_models" = "true" ]; then args="$args --skip-models"; fi
+python3 scripts/install_provider.py $args
+'''
+
+[tasks.download-models]
+description = "Download model files for a provider"
+usage = '''
+arg "[provider]" help="Provider name (default: kokoro-onnx)" default="kokoro-onnx"
+flag "--with-fp16" help="Also download FP16 model variants"
+'''
+run = '''
+set -e
+provider="${usage_provider:-kokoro-onnx}"
+extra=""
+if [ "$usage_with_fp16" = "true" ]; then extra="--with-fp16"; fi
+python3 scripts/download_models.py "$provider" $extra
+'''
+
+[tasks.install]
+description = "Install systemd units + speechd module config (user scope)"
+depends = ["sync-daemon"]
+usage = '''
+flag "--yes" help="Assume yes for all prompts (non-interactive)"
+'''
+run = '''
+set -e
+yes=""
+if [ "$usage_yes" = "true" ]; then yes="--yes"; fi
+python3 scripts/install.py $yes
+'''
+
+[tasks.uninstall]
+description = "Remove installed units + speechd module config"
+run = "python3 scripts/uninstall.py"
+
+[tasks.run]
+description = "Run the daemon in the foreground (no socket activation)"
+depends = ["sync-daemon"]
+run = "daemon/.venv/bin/python -m kde_tts_daemon --foreground"
+
+[tasks.status]
+description = "Show daemon status via the control socket"
+run = "bin/kde-tts-ctl status"
+
+[tasks.switch-provider]
+description = "Switch the active TTS provider"
+usage = '''
+arg "<provider>" help="Provider name to switch to"
+'''
+run = '''
+set -e
+bin/kde-tts-ctl switch "$usage_provider"
+pkill -u "$USER" -f '^/usr/bin/speech-dispatcher' 2>/dev/null || true
+'''
+
+[tasks.voices]
+description = "Show current voices known to speech-dispatcher"
+run = '''
+set -e
+bin/kde-tts-ctl status
+spd-say -o neural-tts --list-synthesis-voices || true
+'''
+
+[tasks.logs]
+description = "Follow daemon journal"
+run = "journalctl --user -u kde-tts.service -f"
+
+[tasks.test]
+description = "Run unit and integration tests"
+depends = ["sync-daemon"]
+run = "daemon/.venv/bin/python -m pytest -v tests/"
+
+[tasks.gen-proto]
+description = "Regenerate *_pb2.py from proto/kde_tts.proto"
+depends = ["sync-daemon"]
+run = '''
+set -e
+daemon/.venv/bin/python -m grpc_tools.protoc -Iproto \
+    --python_out=daemon/src/kde_tts_daemon/pb \
+    --pyi_out=daemon/src/kde_tts_daemon/pb \
+    proto/kde_tts.proto
+daemon/.venv/bin/python -m grpc_tools.protoc -Iproto \
+    --python_out=providers/kokoro-onnx/src/kde_tts_provider_kokoro_onnx/pb \
+    --pyi_out=providers/kokoro-onnx/src/kde_tts_provider_kokoro_onnx/pb \
+    proto/kde_tts.proto
+echo "Regenerated kde_tts_pb2.py in both packages."
+'''
