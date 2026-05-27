@@ -3,17 +3,22 @@
 
 Idempotent: skips files that already exist with the expected size (±5%).
 Downloads to <name>.partial and atomically renames on completion.
+
+For providers backed by Hugging Face (e.g. longcat-audiodit) we shell out to
+the provider's own venv python so huggingface_hub's snapshot_download handles
+resumption, size verification, and atomic moves natively.
 """
 
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import die, info, models_dir, warn  # noqa: E402  (sibling import)
+from _common import die, info, models_dir, repo_root, warn  # noqa: E402  (sibling import)
 
 # (name, url, approx_size_bytes)
 KOKORO_FILES: list[tuple[str, str, int]] = [
@@ -83,6 +88,32 @@ def _fetch_set(files: list[tuple[str, str, int]], dest_dir: Path) -> None:
             die(f"failed to download {url}: {e}")
 
 
+LONGCAT_HF_REPO = "meituan-longcat/LongCat-AudioDiT-1B"
+LONGCAT_DIR_NAME = "longcat-audiodit-1b"
+
+
+def _fetch_longcat(dest_dir: Path) -> None:
+    """Snapshot-download the LongCat-AudioDiT model via the provider's venv."""
+    target = dest_dir / LONGCAT_DIR_NAME
+    target.mkdir(parents=True, exist_ok=True)
+
+    venv_python = repo_root() / "providers" / "longcat-audiodit" / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        die(
+            f"longcat venv python not found at {venv_python}; "
+            "run `mise run install-provider longcat-audiodit --skip-models` first"
+        )
+
+    info(f"fetching {LONGCAT_HF_REPO} into {target} (this can take a few minutes)")
+    snippet = (
+        "from huggingface_hub import snapshot_download;"
+        f"snapshot_download(repo_id={LONGCAT_HF_REPO!r}, local_dir={str(target)!r})"
+    )
+    result = subprocess.run([str(venv_python), "-c", snippet])
+    if result.returncode != 0:
+        die(f"snapshot_download failed (exit {result.returncode})", code=result.returncode)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="download_models.py")
     parser.add_argument("provider", nargs="?", default="kokoro-onnx")
@@ -98,6 +129,8 @@ def main(argv: list[str] | None = None) -> int:
         _fetch_set(KOKORO_FILES, dest)
         if args.with_fp16_gpu:
             _fetch_set(KOKORO_FP16_GPU_FILES, dest)
+    elif args.provider == "longcat-audiodit":
+        _fetch_longcat(dest)
     else:
         die(f"download_models: provider {args.provider!r} has no built-in download spec yet")
     info(f"models in {dest}")

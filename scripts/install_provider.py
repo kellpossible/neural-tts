@@ -12,6 +12,35 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _common import die, info, load_registry, repo_root, require  # noqa: E402
+from _longcat_pin import LONGCAT_UPSTREAM_COMMIT, LONGCAT_UPSTREAM_REPO  # noqa: E402
+
+
+def _vendor_longcat(project_dir: Path) -> None:
+    """Clone (or fast-forward to) the pinned LongCat-AudioDiT upstream commit.
+
+    The cloned repo sits next to the provider's .venv. engine.py adds its
+    path to sys.path before importing the `audiodit` package.
+    """
+    vendor_root = project_dir / "vendor" / "LongCat-AudioDiT"
+    git = require("git", "https://git-scm.com/")
+
+    if not (vendor_root / ".git").is_dir():
+        vendor_root.parent.mkdir(parents=True, exist_ok=True)
+        info(f"cloning upstream LongCat-AudioDiT into {vendor_root}")
+        result = subprocess.run([str(git), "clone", LONGCAT_UPSTREAM_REPO, str(vendor_root)])
+        if result.returncode != 0:
+            die(f"git clone failed (exit {result.returncode})", code=result.returncode)
+
+    info(f"checking out pinned commit {LONGCAT_UPSTREAM_COMMIT[:12]}")
+    result = subprocess.run([str(git), "fetch", "--quiet", "origin", LONGCAT_UPSTREAM_COMMIT], cwd=vendor_root)
+    if result.returncode != 0:
+        die(f"git fetch of pinned commit failed (exit {result.returncode})", code=result.returncode)
+    result = subprocess.run(
+        [str(git), "-c", "advice.detachedHead=false", "checkout", "--quiet", LONGCAT_UPSTREAM_COMMIT],
+        cwd=vendor_root,
+    )
+    if result.returncode != 0:
+        die(f"git checkout failed (exit {result.returncode})", code=result.returncode)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,6 +64,11 @@ def main(argv: list[str] | None = None) -> int:
         die(f"provider project dir not found: {project_dir}")
 
     uv = require("uv", "https://docs.astral.sh/uv/")
+
+    # LongCat needs upstream's `audiodit/` source on sys.path. Clone it before
+    # `uv sync` so the venv is fully usable as soon as sync finishes.
+    if args.provider == "longcat-audiodit":
+        _vendor_longcat(project_dir)
 
     cmd = [str(uv), "sync"]
     for x in args.extra:

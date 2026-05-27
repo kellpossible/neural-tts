@@ -9,14 +9,15 @@ supports_cloning = false
 needs_models = true
 notes = "Auto-selects FP32 model on GPU, INT8 on CPU."
 
+[providers.longcat-audiodit]
+display_name = "LongCat-AudioDiT (1B)"
+project_dir = "providers/longcat-audiodit"
+python_module = "neural_tts_provider_longcat_audiodit"
+supports_cloning = true
+needs_models = true
+notes = "Zero-shot voice cloning. CUDA-only. Drop reference clips into ~/.local/share/neural-tts-daemon/voices/longcat/<id>.<en|zh>.{wav,txt}."
+
 # Future providers — uncomment when implemented and `mise run install-provider <name>` succeeds:
-#
-# [providers.longcat]
-# display_name = "LongCat AudioDiT"
-# project_dir = "providers/longcat"
-# python_module = "neural_tts_provider_longcat"
-# supports_cloning = true
-# needs_models = true
 #
 # [providers.moss]
 # display_name = "MOSS-TTS"

@@ -1,0 +1,37 @@
+[project]
+name = "neural-tts-provider-longcat-audiodit"
+version = "0.1.0"
+description = "LongCat-AudioDiT zero-shot voice-cloning TTS provider for neural-tts-daemon"
+requires-python = ">=3.11,<3.13"
+
+# Heavy upstream deps mirror LongCat-AudioDiT's requirements.txt verbatim,
+# pinned by the commit in scripts/_longcat_pin.py. Bump the pin and re-sync
+# this list at the same time.
+#   https://github.com/meituan-longcat/LongCat-AudioDiT/blob/<pin>/requirements.txt
+dependencies = [
+    # --- upstream requirements.txt @ pinned commit ---
+    "transformers>=5.3.0",
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+    "safetensors>=0.4.0",
+    "librosa>=0.10.0",
+    "soundfile>=0.12.0",
+    "numpy>=1.24.0",
+    "einops>=0.8.0",
+    # --- our integration layer ---
+    "protobuf>=5.27",
+    "pysbd>=0.3.4",
+    "huggingface-hub>=0.24",
+]
+
+[project.optional-dependencies]
+# CUDA-only model; this extra exists for symmetry with kokoro-onnx. Upstream's
+# torch dep pulls the right wheels.
+gpu = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/neural_tts_provider_longcat_audiodit"]

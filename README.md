@@ -2,7 +2,13 @@
 
 A bridge between operating system TTS interface and various newly available TTS libraries.
 
-Currently only `speech-dispatcher` on Linux with Kokoro-82M is supported.
+Currently `speech-dispatcher` on Linux is supported, with two providers:
+
+- **kokoro-onnx** — Kokoro-82M via ONNX runtime. CPU or GPU, dozens of
+  pre-baked voices, multilingual.
+- **longcat-audiodit** — Meituan's [LongCat-AudioDiT](https://github.com/meituan-longcat/LongCat-AudioDiT)
+  1B diffusion model. CUDA-only, zero-shot voice cloning from user-supplied
+  reference clips, English + Chinese.
 
 The daemon-↔-provider protocol is provider-agnostic so other engines (LongCat-AudioDiT, MOSS-TTS, …) can be plugged in later.
 
@@ -132,6 +138,40 @@ Environment overrides (set in a service drop-in):
 | `TTS_KOKORO_MODEL_PATH` | auto (fp16-gpu on GPU, int8 on CPU) | Pin a specific Kokoro model file |
 | `TTS_KOKORO_VOICES_PATH` | `~/.local/share/neural-tts-daemon/models/voices-v1.0.bin` | Pin a voices file |
 | `NEURAL_TTS_LOG_LEVEL` | `INFO` | Daemon and provider log level |
+
+## LongCat-AudioDiT (zero-shot voice cloning)
+
+LongCat-AudioDiT is a diffusion TTS that clones any voice from a short
+reference clip — no fine-tuning, no per-voice training. It's CUDA-only and
+the 1B model needs roughly 5–6 GB VRAM at fp16.
+
+```bash
+# 1. Install the provider (creates providers/longcat-audiodit/.venv,
+#    downloads ~4 GB of HuggingFace model files)
+mise run install-provider longcat-audiodit --extra gpu
+
+# 2. Drop reference clips into the user-voices dir. Each "voice" is a
+#    pair of files:
+#      <voice-id>.<lang>.wav   ← 5-15 s clean reference audio
+#      <voice-id>.<lang>.txt   ← exact transcript of that clip (UTF-8)
+#    lang must be `en` or `zh`. Optional sidecar:
+#      <voice-id>.<lang>.toml  ← { display_name = "...", gender = "female" }
+mkdir -p ~/.local/share/neural-tts-daemon/voices/longcat
+cp my-clip.wav ~/.local/share/neural-tts-daemon/voices/longcat/alice.en.wav
+echo "the exact words spoken in my clip" \
+    > ~/.local/share/neural-tts-daemon/voices/longcat/alice.en.txt
+
+# 3. Switch the active provider and reload speechd's voice list
+bin/neural-tts-ctl switch longcat-audiodit
+bin/neural-tts-ctl reload-voices
+
+# 4. Speak
+spd-say -o neural-tts -y alice "Hello world from LongCat."
+```
+
+Limitations: English + Chinese only; the daemon's `speed` knob is ignored
+(LongCat has no native speed control); long input is sentence-chunked, so
+time-to-first-audio scales with the first chunk, not the full text.
 
 ## Adding another provider
 

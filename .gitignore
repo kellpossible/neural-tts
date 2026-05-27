@@ -8,3 +8,6 @@
 dist/
 build/
 *.partial
+# Vendored upstream sources fetched by scripts/install_provider.py — pinned
+# by SHA in scripts/_longcat_pin.py, regenerable, not part of our source tree.
+providers/*/vendor/

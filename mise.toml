@@ -105,5 +105,9 @@ daemon/.venv/bin/python -m grpc_tools.protoc -Iproto \
     --python_out=providers/kokoro-onnx/src/neural_tts_provider_kokoro_onnx/pb \
     --pyi_out=providers/kokoro-onnx/src/neural_tts_provider_kokoro_onnx/pb \
     proto/neural_tts.proto
-echo "Regenerated neural_tts_pb2.py in both packages."
+daemon/.venv/bin/python -m grpc_tools.protoc -Iproto \
+    --python_out=providers/longcat-audiodit/src/neural_tts_provider_longcat_audiodit/pb \
+    --pyi_out=providers/longcat-audiodit/src/neural_tts_provider_longcat_audiodit/pb \
+    proto/neural_tts.proto
+echo "Regenerated neural_tts_pb2.py in all provider packages."
 '''
