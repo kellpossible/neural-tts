@@ -97,10 +97,18 @@ _STDOUT_LOCK = threading.Lock()
 
 
 def write_line(line: str) -> None:
-    """Write one protocol line to speechd over stdout (thread-safe)."""
+    """Write one protocol line to speechd over stdout (thread-safe).
+
+    Swallows BrokenPipeError so a speechd that has dropped our pipe mid-stream
+    doesn't take the whole module process down. The next read_line() will see
+    EOF and the main loop will exit cleanly.
+    """
     with _STDOUT_LOCK:
-        sys.stdout.write(line.rstrip("\n") + "\n")
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(line.rstrip("\n") + "\n")
+            sys.stdout.flush()
+        except BrokenPipeError:
+            log.warning("write_line: speechd pipe closed; dropping %r", line[:80])
 
 
 def read_line() -> str | None:
@@ -685,8 +693,10 @@ def cmd_quit() -> None:
 
 
 def main() -> int:
-    # Ignore SIGPIPE so a closed paplay stdin doesn't kill us.
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    # Ignore SIGPIPE so a closed paplay stdin (or a speechd that has dropped
+    # our output pipe mid-stream) raises BrokenPipeError in the offending
+    # write() instead of killing us synchronously. SIG_DFL = terminate.
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
     # argv[1] is our config file path (if any). We don't need it.
     line = read_line()
