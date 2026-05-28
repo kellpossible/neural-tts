@@ -149,6 +149,15 @@ idle_timeout_seconds = 600   # unload provider after this many seconds idle (0 =
 eager_startup = false        # if true, pre-spawn `provider.default` with its model
                              # loaded at daemon start. Otherwise providers spawn
                              # on demand when a synth request arrives.
+
+# Optional per-provider settings. Section name matches the provider's
+# registry name (use TOML's bracket form for hyphens, as below).
+[providers.kokoro-onnx]
+voices = ["bm_daniel", "bm_lewis"]   # voice-id allowlist; omit or set to []
+                                     # to surface every voice the provider
+                                     # reports. Filtering happens during
+                                     # enumeration, so dropped voices never
+                                     # reach speechd or its clients.
 ```
 
 Providers are opt-in: a fresh install ships with only `kokoro-onnx` enabled.
@@ -156,6 +165,14 @@ After running `mise run install-provider <name>`, add the name to
 `[provider] enabled` to make its voices visible to the daemon. The daemon
 routes every synth request to the owning provider via the global voice
 index — there's no manual "switch to provider X" step.
+
+Per-provider voice allowlists (`[providers.<name>] voices = [...]`) let
+you trim a provider's voice list before it reaches speechd — useful for
+kokoro's 54-voice catalogue when you only want a handful surfaced in
+Firefox/Okular pickers. Use `spd-say -o neural-tts --list-synthesis-voices`
+to see voice ids, then list the ones you want to keep. After editing the
+config, restart the daemon (`systemctl --user restart neural-tts.service`)
+to re-enumerate.
 
 Environment overrides (set in a service drop-in):
 

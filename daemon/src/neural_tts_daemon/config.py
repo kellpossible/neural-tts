@@ -49,9 +49,22 @@ class SupervisorConfig:
 
 
 @dataclass
+class ProviderSettings:
+    """Per-provider settings from `[providers.<name>]` tables.
+
+    `voices` is an optional allowlist of voice ids; when set, the daemon
+    drops any other voices from that provider during enumeration. Absent or
+    empty means "no filtering — surface every voice the provider reports".
+    """
+    voices: list[str] = field(default_factory=list)
+
+
+@dataclass
 class DaemonConfig:
     provider: ProviderConfig = field(default_factory=ProviderConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
+    # provider_name → settings. Keyed by the same names used in the registry.
+    providers: dict[str, ProviderSettings] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path = CONFIG_FILE) -> "DaemonConfig":
@@ -59,9 +72,15 @@ class DaemonConfig:
             return cls()
         with path.open("rb") as f:
             raw = tomllib.load(f)
+        providers_raw = raw.get("providers", {}) or {}
+        providers = {
+            name: ProviderSettings(**settings)
+            for name, settings in providers_raw.items()
+        }
         return cls(
             provider=ProviderConfig(**raw.get("provider", {})),
             supervisor=SupervisorConfig(**raw.get("supervisor", {})),
+            providers=providers,
         )
 
 

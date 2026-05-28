@@ -83,6 +83,7 @@ async def run(args: argparse.Namespace) -> int:
         idle_timeout_seconds=config.supervisor.idle_timeout_seconds,
         enabled_providers=config.provider.enabled,
         eager_startup=config.supervisor.eager_startup,
+        voice_allowlists={name: s.voices for name, s in config.providers.items()},
     )
 
     adopted = _adopt_systemd_sockets()

@@ -134,10 +134,15 @@ class Supervisor:
         idle_timeout_seconds: int,
         enabled_providers: list[str] | None = None,
         eager_startup: bool = False,
+        voice_allowlists: dict[str, list[str]] | None = None,
     ) -> None:
         self.default_provider = default_provider
         self.idle_timeout_seconds = idle_timeout_seconds
         self.eager_startup = eager_startup
+        # provider_name → frozenset of voice ids. Empty set = no filter.
+        self._voice_allowlists = {
+            name: frozenset(ids) for name, ids in (voice_allowlists or {}).items() if ids
+        }
         full_registry = load_registry()
         allowed = set(enabled_providers or [])
         for name in allowed:
@@ -215,6 +220,18 @@ class Supervisor:
                             await self._shutdown_locked()
                         except Exception:
                             log.exception("enumerate: shutdown of %s failed", name)
+
+        # Apply per-provider voice allowlists, if configured.
+        for name, voices in list(out.items()):
+            allow = self._voice_allowlists.get(name)
+            if allow:
+                filtered = [v for v in voices if v.id in allow]
+                if len(filtered) != len(voices):
+                    log.info(
+                        "voice allowlist for %s: %d/%d voices kept (%s)",
+                        name, len(filtered), len(voices), sorted(allow),
+                    )
+                out[name] = filtered
 
         # Populate the index from what we got.
         self._voice_index.clear()
