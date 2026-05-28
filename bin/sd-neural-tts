@@ -221,6 +221,9 @@ class ModuleState:
     ssml_mode: bool = False
     voices_cache: list[dict] = field(default_factory=list)
     voices_cache_time: float = 0.0
+    # Maps the human-readable name we advertised in LIST VOICES back to the
+    # voice id the daemon expects. Populated each time cmd_list_voices emits.
+    voice_name_to_id: dict[str, str] = field(default_factory=dict)
 
     def speed(self) -> float:
         r = max(-100, min(100, int(self.rate)))
@@ -451,7 +454,10 @@ def _apply_setting(var: str, val: str) -> None:
         # Voice picked by name (the third arg of AddVoice / SPDVoice.name).
         # speechd sends "NULL" / "none" / "" when no voice override is set.
         if val and val.lower() not in ("none", "null", ""):
-            STATE.voice_name = val
+            # Firefox/clients send back whatever we put in LIST VOICES column 1
+            # (a human-readable display name). Map it back to the daemon's
+            # voice id; fall back to val for back-compat with id-style names.
+            STATE.voice_name = STATE.voice_name_to_id.get(val, val)
             STATE.explicit_voice_name = True
         else:
             STATE.explicit_voice_name = False
@@ -557,8 +563,11 @@ def cmd_list_voices(line: str) -> None:
     one = False
     sent_langs: dict[str, int] = {}
     written: set[tuple[str, str]] = set()
+    # Reset the name→id map; we rebuild it as we emit.
+    STATE.voice_name_to_id = {}
+    used_names_per_lang: dict[str, set[str]] = {}
 
-    def _emit(name: str, lang: str, variant: str) -> None:
+    def _emit(name: str, voice_id: str, lang: str, variant: str) -> None:
         nonlocal one
         key = (name, lang)
         if key in written:
@@ -574,8 +583,23 @@ def cmd_list_voices(line: str) -> None:
             if requested_variant and requested_variant.lower() != variant.lower():
                 return
         write_line(f"200-{name}\t{lang}\t{variant}")
+        STATE.voice_name_to_id[name] = voice_id
         sent_langs[lang] = sent_langs.get(lang, 0) + 1
         one = True
+
+    def _pick_display_name(voice: dict, lang: str) -> str:
+        """Choose a unique, human-readable column-1 name for this voice/lang.
+
+        Prefer the provider-supplied display_name; if that collides with one
+        already emitted for the same lang, disambiguate by appending the id.
+        """
+        base = (voice.get("display_name") or voice["id"]).strip() or voice["id"]
+        used = used_names_per_lang.setdefault(lang, set())
+        candidate = base
+        if candidate in used:
+            candidate = f"{base} ({voice['id']})"
+        used.add(candidate)
+        return candidate
 
     # Each voice is emitted under its true base lang. For en-* voices we
     # also emit under bare en-US so Okular's saved-ttsVoice lookup at
@@ -585,15 +609,17 @@ def cmd_list_voices(line: str) -> None:
     US_LANG = "en-US"
 
     for v in voices:
-        name = v["id"]
+        voice_id = v["id"]
         raw_lang = v.get("language") or ""
         lang = _normalize_lang(raw_lang) if raw_lang else "none"
         # See _GENDER_TO_VARIANT comment: always "none" so the plugin
         # doesn't end up with QLocale("en-gb_male").
         variant = "none"
-        _emit(name, lang, variant)
+        name = _pick_display_name(v, lang)
+        _emit(name, voice_id, lang, variant)
         if lang.lower().startswith("en-") and lang != US_LANG:
-            _emit(name, US_LANG, variant)
+            us_name = _pick_display_name(v, US_LANG)
+            _emit(us_name, voice_id, US_LANG, variant)
 
     if one:
         breakdown = ", ".join(f"{l}={n}" for l, n in sorted(sent_langs.items()))

@@ -56,9 +56,10 @@ class KokoroProvider:
         self.sample_rate = SAMPLE_RATE
 
     def _voice_pb(self, voice_id: str) -> pb.Voice:
-        prefix = voice_id.split("_", 1)[0]
+        prefix, _, rest = voice_id.partition("_")
         lang, gender = _PREFIX_MAP.get(prefix, ("en-US", pb.FEMALE))
-        return pb.Voice(id=voice_id, language=lang, gender=gender, display_name=voice_id)
+        display = rest.replace("_", " ").title() if rest else voice_id
+        return pb.Voice(id=voice_id, language=lang, gender=gender, display_name=display)
 
     def list_voices_pb(self) -> list[pb.Voice]:
         # Once the model is loaded, prefer its authoritative list (catches any

@@ -43,12 +43,11 @@ KDE app → QtSpeech → speech-dispatcher → sd_generic → bin/sd-neural-tts
   on the fly via `soxr` if the active provider's native rate differs.
 - **Provider isolation**: each provider is its own uv project with its own
   `.venv/`. Only one provider subprocess is alive at a time.
-- **Auto-routing**: the daemon keeps a persistent voice index
-  (`~/.cache/neural-tts-daemon/voice_index.json`) mapping every voice id to its
-  owning provider. The first LIST VOICES from speechd populates it by spawning
-  each enabled provider in *lazy* mode (no model load) to enumerate voices,
-  then shutting it down. On synth, the daemon looks up the voice in the index
-  and ensures the owning provider is running and warm.
+- **Auto-routing**: the daemon keeps an in-memory voice index mapping every
+  voice id to its owning provider. The first LIST VOICES from speechd populates
+  it by spawning each enabled provider in *lazy* mode (no model load) to
+  enumerate voices, then shutting it down. On synth, the daemon looks up the
+  voice in the index and ensures the owning provider is running and warm.
 - **Lazy vs eager warmup**: providers default to lazy — they enumerate voices
   in milliseconds, deferring model load until first synth. The daemon spawns
   them eagerly (`--eager-startup`) for the synth path so the model is loaded

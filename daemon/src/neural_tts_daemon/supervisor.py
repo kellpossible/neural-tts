@@ -165,7 +165,6 @@ class Supervisor:
         self._idle_task: asyncio.Task | None = None
         self._closing = False
         self._voice_index = VoiceIndex(sorted(self._registry))
-        self._voice_index.load()
 
     # ── voice index access ─────────────────────────────────────────────
 
@@ -173,7 +172,7 @@ class Supervisor:
         return self._voice_index
 
     async def ensure_voice_index_populated(self) -> VoiceIndex:
-        """Populate the on-disk voice index if it's empty. Idempotent."""
+        """Populate the in-memory voice index if it's empty. Idempotent."""
         if not self._voice_index.is_empty():
             return self._voice_index
         await self.enumerate_all_voices()
@@ -182,7 +181,7 @@ class Supervisor:
     async def enumerate_all_voices(self) -> dict[str, list[Voice]]:
         """For each enabled provider: reuse if already active+READY, otherwise
         spawn it briefly in lazy mode, read voices from the warmup response,
-        then shut it down. Persists the union to disk."""
+        then shut it down."""
         out: dict[str, list[Voice]] = {}
         async with self._lifecycle_lock:
             for name in sorted(self._registry):
@@ -221,10 +220,6 @@ class Supervisor:
         self._voice_index.clear()
         for name, voices in out.items():
             self._voice_index.set_provider_voices(name, voices)
-        try:
-            self._voice_index.save()
-        except OSError as e:
-            log.warning("could not persist voice index: %s", e)
         return out
 
     def known_providers(self) -> list[ProviderMeta]:
