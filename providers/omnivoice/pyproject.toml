@@ -1,0 +1,54 @@
+[project]
+name = "neural-tts-provider-omnivoice"
+version = "0.1.0"
+description = "OmniVoice (k2-fsa) zero-shot voice-cloning TTS provider for neural-tts-daemon"
+requires-python = ">=3.11,<3.13"
+
+# Upstream is pip-installable; pin the commit via git URL rather than vendoring
+# a checkout. Bump = edit the @<SHA> tail and re-run `mise run install-provider
+# omnivoice`. Upstream repo: https://github.com/k2-fsa/OmniVoice
+dependencies = [
+    "omnivoice @ git+https://github.com/k2-fsa/OmniVoice.git@33a8ca325d9c95df20512b36864b9041c7532b35",
+    "protobuf>=5.27",
+    "pysbd>=0.3.4",
+    "numpy>=1.24",
+    "huggingface-hub>=0.24",
+]
+
+# Base install pulls the CPU torch wheel; `--extra gpu` pulls the standard
+# PyPI torch wheel (cu12.x split-runtime) which depends on the same
+# `nvidia-*-cu12` wheels that kokoro-onnx's `onnxruntime-gpu[cuda,cudnn]`
+# pulls. That keeps uv from downloading multiple GB of CUDA libs twice —
+# they're shared via uv's wheel cache and hardlinked across both venvs.
+#
+# We deliberately do NOT redirect torch to `download.pytorch.org/whl/cu128`
+# here, even though upstream OmniVoice's pyproject does. Their cu128 bundle
+# self-packs a CUDA runtime that doesn't overlap with PyPI's
+# `nvidia-*-cu12` wheels, so installing both providers would double-download
+# ~3 GB of effectively-identical CUDA.
+[project.optional-dependencies]
+gpu = ["torch>=2.8", "torchaudio>=2.8"]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "extra != 'gpu'" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", marker = "extra != 'gpu'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# Allow the `omnivoice @ git+...@<sha>` direct reference in dependencies above.
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/neural_tts_provider_omnivoice"]

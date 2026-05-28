@@ -135,6 +135,7 @@ class Supervisor:
         enabled_providers: list[str] | None = None,
         eager_startup: bool = False,
         voice_allowlists: dict[str, list[str]] | None = None,
+        provider_envs: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self.default_provider = default_provider
         self.idle_timeout_seconds = idle_timeout_seconds
@@ -142,6 +143,13 @@ class Supervisor:
         # provider_name → frozenset of voice ids. Empty set = no filter.
         self._voice_allowlists = {
             name: frozenset(ids) for name, ids in (voice_allowlists or {}).items() if ids
+        }
+        # provider_name → {ENV_VAR: value}. Merged into the subprocess env at
+        # spawn so users can set provider knobs (e.g. TTS_OMNIVOICE_NUM_STEP)
+        # via config.toml's `[providers.<name>] env = { ... }` table without
+        # touching systemd drop-ins.
+        self._provider_envs = {
+            name: dict(env) for name, env in (provider_envs or {}).items() if env
         }
         full_registry = load_registry()
         allowed = set(enabled_providers or [])
@@ -296,7 +304,11 @@ class Supervisor:
     ) -> AsyncIterator[bytes]:
         """Send a synthesize request; yields raw float32 PCM chunks at provider's native rate."""
         proc = await self.ensure_ready()
-        if voice not in {v.id for v in proc.voices}:
+        # `voice` is the public id (potentially `<id>.<provider>` if the index
+        # disambiguated a cross-provider collision). The provider only knows
+        # the bare id — translate before forwarding.
+        local_voice = self._voice_index.local_id_for(voice)
+        if local_voice not in {v.id for v in proc.voices}:
             raise ValueError(f"unknown voice {voice!r}")
         proc.last_activity = time.monotonic()
 
@@ -305,7 +317,7 @@ class Supervisor:
 
             req = pb.Request(
                 synthesize=pb.SynthesizeRequest(
-                    voice=voice, speed=speed, lang=lang, text=text
+                    voice=local_voice, speed=speed, lang=lang, text=text
                 )
             )
             # Mark dirty: from this point on, the stream may carry frames the
@@ -428,6 +440,7 @@ class Supervisor:
         try:
             env = {
                 **os.environ,
+                **self._provider_envs.get(name, {}),
                 "NEURAL_TTS_PROVIDER_FD": str(child_fd),
                 "PYTHONUNBUFFERED": "1",
             }

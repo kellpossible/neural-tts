@@ -66,7 +66,10 @@ async def handle_speechd_connection(
             await _send_and_close(writer, error_response(f"provider unavailable: {e}"))
             return
 
-        if synth.voice not in {v.id for v in proc.voices}:
+        # The provider only knows the bare (local) id; translate from the
+        # public id before checking its voice list.
+        local_voice = idx.local_id_for(synth.voice)
+        if local_voice not in {v.id for v in proc.voices}:
             # The index said this voice was here but the actual provider disagrees —
             # most likely a reference-clip was removed since the last enumeration.
             log.warning(

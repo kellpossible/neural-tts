@@ -138,6 +138,21 @@ def _fetch_moss_tts_nano(dest_dir: Path) -> None:
         _hf_snapshot(venv_python, repo_id, target_root / subdir)
 
 
+OMNIVOICE_HF_REPO = "k2-fsa/OmniVoice"
+OMNIVOICE_DIR_NAME = "omnivoice"
+
+
+def _fetch_omnivoice(dest_dir: Path) -> None:
+    """Snapshot-download the OmniVoice model via the provider's venv."""
+    venv_python = repo_root() / "providers" / "omnivoice" / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        die(
+            f"omnivoice venv python not found at {venv_python}; "
+            "run `mise run install-provider omnivoice --skip-models` first"
+        )
+    _hf_snapshot(venv_python, OMNIVOICE_HF_REPO, dest_dir / OMNIVOICE_DIR_NAME)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="download_models.py")
     parser.add_argument("provider", nargs="?", default="kokoro-onnx")
@@ -167,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         _fetch_longcat(dest)
     elif args.provider == "moss-tts-nano":
         _fetch_moss_tts_nano(dest)
+    elif args.provider == "omnivoice":
+        _fetch_omnivoice(dest)
     else:
         die(f"download_models: provider {args.provider!r} has no built-in download spec yet")
     info(f"models in {dest}")

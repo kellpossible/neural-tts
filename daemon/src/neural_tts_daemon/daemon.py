@@ -84,6 +84,7 @@ async def run(args: argparse.Namespace) -> int:
         enabled_providers=config.provider.enabled,
         eager_startup=config.supervisor.eager_startup,
         voice_allowlists={name: s.voices for name, s in config.providers.items()},
+        provider_envs={name: dict(s.env) for name, s in config.providers.items() if s.env},
     )
 
     adopted = _adopt_systemd_sockets()

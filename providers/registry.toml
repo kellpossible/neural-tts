@@ -24,3 +24,11 @@ python_module = "neural_tts_provider_moss_tts_nano"
 supports_cloning = true
 needs_models = true
 notes = "Zero-shot voice cloning, CPU-friendly (claims realtime on 4 cores). Drop reference clips into ~/.local/share/neural-tts-daemon/voices/moss-tts-nano/<id>.<lang>.wav (no transcript needed)."
+
+[providers.omnivoice]
+display_name = "OmniVoice (k2-fsa)"
+project_dir = "providers/omnivoice"
+python_module = "neural_tts_provider_omnivoice"
+supports_cloning = true
+needs_models = true
+notes = "Zero-shot voice cloning, 600+ languages, GPU recommended. Drop reference clips into ~/.local/share/neural-tts-daemon/voices/omnivoice/<id>.<lang>.wav; optional <id>.<lang>.txt overrides Whisper auto-transcription."

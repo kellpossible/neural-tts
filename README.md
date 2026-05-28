@@ -2,7 +2,7 @@
 
 A bridge between operating system TTS interface and various newly available TTS libraries.
 
-Currently `speech-dispatcher` on Linux is supported, with three providers:
+Currently `speech-dispatcher` on Linux is supported, with four providers:
 
 - **kokoro-onnx** — Kokoro-82M via ONNX runtime. CPU or GPU, dozens of
   pre-baked voices, multilingual.
@@ -12,6 +12,10 @@ Currently `speech-dispatcher` on Linux is supported, with three providers:
 - **moss-tts-nano** — OpenMOSS's [MOSS-TTS-Nano](https://github.com/OpenMOSS/MOSS-TTS-Nano)
   100M autoregressive ONNX model. CPU-friendly (claims realtime on 4 cores),
   zero-shot voice cloning, 20 languages.
+- **omnivoice** — k2-fsa's [OmniVoice](https://github.com/k2-fsa/OmniVoice)
+  diffusion language model. GPU-recommended (CUDA/XPU/MPS), zero-shot voice
+  cloning, 600+ languages, optional Whisper auto-transcription of reference
+  clips.
 
 The daemon-↔-provider protocol is provider-agnostic so other engines can be plugged in later.
 
@@ -174,6 +178,18 @@ to see voice ids, then list the ones you want to keep. After editing the
 config, restart the daemon (`systemctl --user restart neural-tts.service`)
 to re-enumerate.
 
+Per-provider environment variables (`[providers.<name>] env = { ... }`)
+get injected into the provider's subprocess on spawn. Use this to set
+provider knobs without editing a systemd drop-in:
+
+```toml
+[providers.omnivoice]
+env = { TTS_OMNIVOICE_NUM_STEP = "24", TTS_OMNIVOICE_DEVICE = "cuda:0" }
+```
+
+Values must be strings (TOML's typed values get coerced). The env table
+overrides any same-named variable from the daemon's own environment.
+
 Environment overrides (set in a service drop-in):
 
 | Var | Default | Effect |
@@ -262,6 +278,61 @@ first chunk; WeTextProcessing-based text normalisation is intentionally
 disabled (it requires `pynini`, which doesn't install cleanly under `uv`),
 so very heavy numeric/abbreviation input may sound less polished than via
 upstream's CLI.
+
+## OmniVoice (massively multilingual zero-shot cloning)
+
+OmniVoice is a diffusion language model TTS from k2-fsa (Apache-2.0). It
+clones voices zero-shot from a short reference clip, supports 600+
+languages, and runs on CUDA, Intel Arc (XPU), Apple Silicon (MPS), or CPU
+via PyTorch. The 1B+ model is too large for realtime CPU synthesis; a GPU
+is strongly recommended.
+
+```bash
+# 1. Install the provider — pulls a pinned commit of upstream from GitHub
+#    via uv, then snapshot-downloads the HuggingFace model weights
+#    (~few GB) into ~/.local/share/neural-tts-daemon/models/omnivoice/.
+mise run install-provider omnivoice --extra gpu
+#    Omit --extra gpu to pull the CPU torch wheel instead (much smaller
+#    download, but synthesis will be well below realtime).
+
+# 2. Drop reference clips into the user-voices dir. Each "voice" is one wav:
+#      <voice-id>.<lang>.wav    ← 3-10 s clean reference audio
+#    <lang> is a BCP-47 primary subtag (en, fr, zh, sw, …) — OmniVoice
+#    handles 600+ languages, we just pass it through. Optional sidecars:
+#      <voice-id>.<lang>.txt    ← manual transcript (overrides Whisper)
+#      <voice-id>.<lang>.toml   ← { display_name = "...", gender = "female" }
+mkdir -p ~/.local/share/neural-tts-daemon/voices/omnivoice
+cp my-clip.wav ~/.local/share/neural-tts-daemon/voices/omnivoice/alice.en.wav
+
+# 3. Refresh the global voice index (only needed after dropping new clips)
+bin/neural-tts-ctl reload-voices
+
+# 4. Speak — the daemon auto-routes by voice id; no explicit switch needed
+spd-say -o neural-tts -y alice "Hello world from OmniVoice."
+```
+
+You can reuse a reference clip from another cloning provider by
+symlinking it into the omnivoice voices dir, e.g.:
+
+```bash
+ln -s ../moss-tts-nano/hobbits.en.wav \
+      ~/.local/share/neural-tts-daemon/voices/omnivoice/hobbits.en.wav
+```
+
+Environment overrides:
+
+| Var | Default | Effect |
+|---|---|---|
+| `TTS_OMNIVOICE_DEVICE` | auto (cuda → xpu → mps → cpu) | Pin a specific torch device string |
+| `TTS_OMNIVOICE_MODEL_PATH` | `~/.local/share/neural-tts-daemon/models/omnivoice` | Pin a local model snapshot dir |
+| `TTS_OMNIVOICE_NUM_STEP` | `16` | Diffusion steps per utterance. Quality vs latency knob — upstream default is 32 (better fidelity); 16 is the README's faster-inference value. Lower = lower TTFA + per-chunk synth time; higher = cleaner audio. |
+| `TTS_OMNIVOICE_COMPILE` | `` (off) | Wrap the model in `torch.compile()` for ~20-40% faster steady-state per diffusion step. Costs 30-60 s extra on the first synth (JIT compile). Accepts `1`/`true`/`on` (= `default` mode), or one of `default`, `reduce-overhead`, `max-autotune`. `reduce-overhead` is fastest but uses CUDA graphs that pin tensor shapes — if you hit recompile storms or shape errors, drop to `default`. Compile failures fall back to eager with a warning. |
+
+Limitations: no native streaming API upstream, so input is sentence-chunked
+and emitted per chunk (time-to-first-audio scales with the first chunk).
+On a fresh voice without a transcript sidecar, the first synthesis pays a
+one-time Whisper transcription cost; subsequent calls reuse it from
+in-memory cache.
 
 ## Adding another provider
 

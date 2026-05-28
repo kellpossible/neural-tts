@@ -591,13 +591,15 @@ def cmd_list_voices(line: str) -> None:
         """Choose a unique, human-readable column-1 name for this voice/lang.
 
         Prefer the provider-supplied display_name; if that collides with one
-        already emitted for the same lang, disambiguate by appending the id.
+        already emitted for the same lang, fall back to the (already-unique)
+        public voice id — which the daemon will have suffixed with the owning
+        provider on cross-provider collisions (e.g. `hobbits.omnivoice`).
         """
         base = (voice.get("display_name") or voice["id"]).strip() or voice["id"]
         used = used_names_per_lang.setdefault(lang, set())
         candidate = base
         if candidate in used:
-            candidate = f"{base} ({voice['id']})"
+            candidate = voice["id"]
         used.add(candidate)
         return candidate
 

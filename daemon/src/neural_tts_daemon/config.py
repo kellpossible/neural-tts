@@ -55,8 +55,16 @@ class ProviderSettings:
     `voices` is an optional allowlist of voice ids; when set, the daemon
     drops any other voices from that provider during enumeration. Absent or
     empty means "no filtering — surface every voice the provider reports".
+
+    `env` is a dict of environment variables to inject into the provider
+    subprocess. Use it to set knobs the provider already reads from its
+    environment (e.g. `TTS_OMNIVOICE_NUM_STEP`, `TTS_KOKORO_MODEL_PATH`).
+    Values must be strings — TOML's typed values are coerced to str before
+    being passed to the subprocess. Pre-existing env vars in the daemon's
+    own environment are overridden by this map.
     """
     voices: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -73,10 +81,13 @@ class DaemonConfig:
         with path.open("rb") as f:
             raw = tomllib.load(f)
         providers_raw = raw.get("providers", {}) or {}
-        providers = {
-            name: ProviderSettings(**settings)
-            for name, settings in providers_raw.items()
-        }
+        providers: dict[str, ProviderSettings] = {}
+        for name, settings in providers_raw.items():
+            raw_env = settings.get("env") or {}
+            providers[name] = ProviderSettings(
+                voices=list(settings.get("voices") or []),
+                env={str(k): str(v) for k, v in raw_env.items()},
+            )
         return cls(
             provider=ProviderConfig(**raw.get("provider", {})),
             supervisor=SupervisorConfig(**raw.get("supervisor", {})),
