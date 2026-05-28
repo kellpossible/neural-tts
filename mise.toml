@@ -13,13 +13,17 @@ run = "cd daemon && uv sync --extra dev"
 description = "Install a provider venv (creates its .venv and downloads model files)"
 usage = '''
 arg "<provider>" help="Provider name (e.g. kokoro-onnx)"
-flag "--extra <extra>" help="uv extras to enable (e.g. gpu)"
+flag "--extra <extra>" help="uv extras to enable. Comma-separated for multiple (e.g. gpu,flash)."
 flag "--skip-models" help="Skip the model download step"
 '''
 run = '''
 set -e
 args="$usage_provider"
-if [ -n "$usage_extra" ]; then args="$args --extra $usage_extra"; fi
+# Split a comma-separated --extra value into one --extra arg per item.
+if [ -n "$usage_extra" ]; then
+    IFS=, read -ra _extras <<< "$usage_extra"
+    for x in "${_extras[@]}"; do args="$args --extra $x"; done
+fi
 if [ "$usage_skip_models" = "true" ]; then args="$args --skip-models"; fi
 python3 scripts/install_provider.py $args
 '''

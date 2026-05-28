@@ -32,3 +32,11 @@ python_module = "neural_tts_provider_omnivoice"
 supports_cloning = true
 needs_models = true
 notes = "Zero-shot voice cloning, 600+ languages, GPU recommended. Drop reference clips into ~/.local/share/neural-tts-daemon/voices/omnivoice/<id>.<lang>.wav; optional <id>.<lang>.txt overrides Whisper auto-transcription."
+
+[providers.qwen3-tts]
+display_name = "Qwen3-TTS (0.6B, streaming)"
+project_dir = "providers/qwen3-tts"
+python_module = "neural_tts_provider_qwen3_tts"
+supports_cloning = true
+needs_models = true
+notes = "Zero-shot voice cloning, 10 languages, streaming output via the dffdeeq fork (https://github.com/dffdeeq/Qwen3-TTS-streaming). Drop reference clips into ~/.local/share/neural-tts-daemon/voices/qwen3-tts/<id>.<en|zh|ja|ko|de|fr|ru|pt|es|it>.{wav,txt}. Latency knobs: TTS_QWEN3_DECODE_WINDOW_FRAMES, TTS_QWEN3_EMIT_EVERY_FRAMES, TTS_QWEN3_GREEDY, TTS_QWEN3_ATTN."

@@ -1,0 +1,48 @@
+[project]
+name = "neural-tts-provider-qwen3-tts"
+version = "0.1.0"
+description = "Qwen3-TTS streaming zero-shot voice-cloning TTS provider for neural-tts-daemon"
+requires-python = ">=3.11,<3.13"
+
+# Use andimarafioti/faster-qwen3-tts: a from-scratch CUDA-graph capture of
+# Qwen3-TTS's predictor + talker that hits ~4.78x RTF on a 4090 (0.6B) vs
+# the ~0.8x baseline of the official wrapper. Streams via
+# `generate_voice_clone_streaming(...)` yielding (pcm, sr, timing) tuples.
+# No flash-attn, no vLLM, no Triton — just torch.cuda.CUDAGraph.
+# Upstream: https://github.com/andimarafioti/faster-qwen3-tts
+dependencies = [
+    "faster-qwen3-tts>=0.2.6",
+    "protobuf>=5.27",
+    "numpy>=1.24",
+    "huggingface-hub>=0.24",
+    "soundfile>=0.12",
+]
+
+# Base install pulls the CPU torch wheel; `--extra gpu` pulls the standard
+# PyPI torch wheel (cu12.x split-runtime) which shares `nvidia-*-cu12`
+# wheels with kokoro-onnx / omnivoice via uv's wheel cache. See omnivoice's
+# pyproject.toml for the same rationale.
+#
+# faster-qwen3-tts targets sdpa by default; no flash-attn needed.
+[project.optional-dependencies]
+gpu = ["torch>=2.5.1", "torchaudio>=2.5.1"]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "extra != 'gpu'" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", marker = "extra != 'gpu'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/neural_tts_provider_qwen3_tts"]

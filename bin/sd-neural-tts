@@ -164,7 +164,11 @@ def _recv_exact(s: socket.socket, n: int) -> bytes:
     return bytes(buf)
 
 
-SYNTH_SOCKET_TIMEOUT = 60.0  # any single recv that takes longer aborts the synth
+# Any single recv that takes longer than this aborts the synth. Default 60 s
+# is fine for fast providers (kokoro, moss) but too short for providers that
+# JIT-compile on first synth (qwen3-tts with torch.compile can take 60-180 s
+# of silence before the first audio chunk). Override via env var when needed.
+SYNTH_SOCKET_TIMEOUT = float(os.environ.get("NEURAL_TTS_SYNTH_TIMEOUT", "300"))
 
 
 class SynthConnection:
