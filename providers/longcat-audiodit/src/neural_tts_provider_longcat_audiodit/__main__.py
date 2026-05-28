@@ -6,6 +6,7 @@ runs a framed protobuf request/response loop until shutdown.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import os
@@ -78,8 +79,8 @@ def _setup_logging() -> None:
     )
 
 
-async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-    provider = LongCatProvider()
+async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *, eager: bool) -> None:
+    provider = LongCatProvider(eager_startup=eager)
     try:
         while True:
             try:
@@ -163,20 +164,28 @@ async def _handle_synthesize(
             pass
 
 
-async def run() -> int:
+async def run(*, eager: bool) -> int:
     _setup_logging()
     sock = _adopt_socket()
     reader, writer = await asyncio.open_unix_connection(sock=sock)
     try:
-        await _serve(reader, writer)
+        await _serve(reader, writer, eager=eager)
     except KeyboardInterrupt:
         pass
     return 0
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(prog="neural-tts-provider-longcat-audiodit")
+    parser.add_argument(
+        "--eager-startup",
+        action="store_true",
+        help="Load the torch model + warm CUDA graphs at process start "
+             "(default: defer until the first synthesize request)",
+    )
+    args = parser.parse_args()
     try:
-        return asyncio.run(run())
+        return asyncio.run(run(eager=args.eager_startup))
     except KeyboardInterrupt:
         return 0
 

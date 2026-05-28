@@ -29,7 +29,8 @@ DEFAULT_GUIDANCE = "apg"  # recommended for voice cloning
 
 
 class LongCatProvider:
-    def __init__(self) -> None:
+    def __init__(self, eager_startup: bool = False) -> None:
+        self._eager = eager_startup
         self._model = None
         self._tokenizer = None
         self._voices: dict[str, VoiceEntry] = {}
@@ -51,30 +52,42 @@ class LongCatProvider:
 
     # ── lifecycle ──────────────────────────────────────────────────────
 
-    async def warmup(self) -> tuple[int, list[pb.Voice]]:
+    async def _ensure_runtime_loaded(self) -> None:
+        if self._model is not None and self._tokenizer is not None:
+            return
         log.info("loading LongCat-AudioDiT (this may take ~30 s)")
         # Heavy: torch + transformers + AudioDiT. Run in a thread so the
         # event loop stays responsive while the daemon waits.
         self._model, self._tokenizer = await asyncio.to_thread(build_longcat)
-        self._rescan_voices()
 
-        if self._voices:
-            first = next(iter(self._voices.values()))
-            log.info("warming up CUDA graphs with voice %s", first.voice_id)
-            try:
-                await asyncio.to_thread(
-                    self._synth_one, first, first.lang, "Warming up."
-                )
-            except Exception:
-                log.exception("warmup synth failed (model loaded, continuing anyway)")
-        else:
+    async def warmup(self) -> tuple[int, list[pb.Voice]]:
+        """Quick voice scan + sample-rate enumeration. Model load is deferred to
+        the first `synthesize_stream` call unless `eager_startup=True`."""
+        self._rescan_voices()
+        if not self._voices:
             log.warning(
                 "no voices found — synthesise requests will fail until reference clips "
                 "are dropped into ~/.local/share/neural-tts-daemon/voices/longcat/ "
                 "and `neural-tts-ctl reload-voices` is invoked"
             )
 
-        log.info("warmup complete; %d voice(s) available", len(self._voices))
+        if self._eager:
+            await self._ensure_runtime_loaded()
+            if self._voices:
+                first = next(iter(self._voices.values()))
+                log.info("warming up CUDA graphs with voice %s", first.voice_id)
+                try:
+                    await asyncio.to_thread(
+                        self._synth_one, first, first.lang, "Warming up."
+                    )
+                except Exception:
+                    log.exception("warmup synth failed (model loaded, continuing anyway)")
+            log.info("eager warmup complete; %d voice(s) available", len(self._voices))
+        else:
+            log.info(
+                "lazy warmup: %d voice(s) enumerated, model load deferred to first synth",
+                len(self._voices),
+            )
         return SAMPLE_RATE, self.list_voices_pb()
 
     async def shutdown(self) -> None:
@@ -96,8 +109,7 @@ class LongCatProvider:
     async def synthesize_stream(
         self, *, voice: str, speed: float, lang: str, text: str
     ) -> AsyncIterator[np.ndarray]:
-        if self._model is None or self._tokenizer is None:
-            raise RuntimeError("provider not warmed up")
+        await self._ensure_runtime_loaded()
         if voice not in self._voices:
             raise RuntimeError(
                 f"unknown voice {voice!r}; available: {sorted(self._voices) or 'NONE — drop clips into the voices/longcat dir'}"

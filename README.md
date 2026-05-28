@@ -184,6 +184,13 @@ Environment overrides (set in a service drop-in):
 
 ## LongCat-AudioDiT (zero-shot voice cloning)
 
+> **Status: untested.** The LongCat provider builds and follows the same
+> daemon/provider protocol as the others, but it has not been end-to-end
+> verified — the 1B model needs more VRAM than the dev box has. Treat the
+> install and synth paths here as unproven; expect rough edges (notably:
+> the model download is not resumable after a network interruption, so
+> reinstall on failure).
+
 LongCat-AudioDiT is a diffusion TTS that clones any voice from a short
 reference clip — no fine-tuning, no per-voice training. It's CUDA-only and
 the 1B model needs roughly 5–6 GB VRAM at fp16.
