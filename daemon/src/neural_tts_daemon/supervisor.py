@@ -474,12 +474,17 @@ class Supervisor:
         )
         self._active = proc
 
+        # BaseException (not Exception) so a CancelledError from the caller —
+        # e.g. speechd disconnecting mid-warmup — still tears down the child.
+        # Without this the subprocess is orphaned holding GPU memory, and the
+        # next ensure_ready spawns a second one that CUDA-OOMs against it.
         try:
             await asyncio.wait_for(self._warmup(proc), timeout=120.0)
-        except Exception:
+        except BaseException:
             log.exception("provider %s warmup failed", name)
             proc.state = ProviderState.FAILED
-            await self._kill(proc)
+            # Shield kill so an in-flight cancellation can't orphan the child.
+            await asyncio.shield(self._kill(proc))
             self._active = None
             raise
 
@@ -506,9 +511,18 @@ class Supervisor:
         proc = self._active
         if not proc:
             return
-        self._active = None
         proc.state = ProviderState.SHUTTING_DOWN
         log.info("shutting down provider %s", proc.meta.name)
+        # Shield the actual teardown: if our caller is cancelled mid-shutdown
+        # we still need the child reaped, otherwise it stays alive holding GPU
+        # memory. Clearing _active happens in finally so the next caller never
+        # sees a half-dead reference.
+        try:
+            await asyncio.shield(self._do_shutdown(proc))
+        finally:
+            self._active = None
+
+    async def _do_shutdown(self, proc: _ProviderProcess) -> None:
         try:
             write_message(proc.writer, pb.Request(shutdown=pb.ShutdownRequest()))
             await proc.writer.drain()
