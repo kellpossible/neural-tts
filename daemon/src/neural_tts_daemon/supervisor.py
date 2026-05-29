@@ -292,10 +292,14 @@ class Supervisor:
                 and self._active.state == ProviderState.READY
             ):
                 return self._active
-            if self._active and self._active.meta.name != target:
+            # Reap any non-READY active proc before spawning — even if its name
+            # matches `target`. A failed-but-still-alive child holds GPU memory
+            # and will OOM the next spawn. Without this branch a same-name
+            # stale `_active` falls straight through to `_spawn_locked`, which
+            # overwrites the reference and orphans the prior process.
+            if self._active is not None:
                 await self._shutdown_locked()
-            if not self._active or self._active.state != ProviderState.READY:
-                await self._spawn_locked(target, eager=True)
+            await self._spawn_locked(target, eager=True)
             assert self._active is not None
             return self._active
 
@@ -425,6 +429,17 @@ class Supervisor:
         meta = self._registry[name]
         if not meta.installed:
             raise ProviderNotInstalled(name)
+
+        # Defensive: any caller that reaches here while `_active` is still
+        # populated would orphan that child by overwriting the reference at
+        # line `self._active = proc` below. Reap first so GPU memory and FDs
+        # are released before the new process competes for them.
+        if self._active is not None:
+            log.warning(
+                "spawn requested while %s is still active (state=%s); reaping first",
+                self._active.meta.name, self._active.state.name,
+            )
+            await self._shutdown_locked()
 
         # If the caller didn't specify, use the daemon's default.
         if eager is None:

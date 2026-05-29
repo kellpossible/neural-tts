@@ -39,4 +39,4 @@ project_dir = "providers/qwen3-tts"
 python_module = "neural_tts_provider_qwen3_tts"
 supports_cloning = true
 needs_models = true
-notes = "Zero-shot voice cloning, 10 languages, streaming output via the dffdeeq fork (https://github.com/dffdeeq/Qwen3-TTS-streaming). Drop reference clips into ~/.local/share/neural-tts-daemon/voices/qwen3-tts/<id>.<en|zh|ja|ko|de|fr|ru|pt|es|it>.{wav,txt}. Latency knobs: TTS_QWEN3_DECODE_WINDOW_FRAMES, TTS_QWEN3_EMIT_EVERY_FRAMES, TTS_QWEN3_GREEDY, TTS_QWEN3_ATTN."
+notes = "Zero-shot voice cloning, 10 languages, streaming output via faster-qwen3-tts (https://github.com/andimarafioti/faster-qwen3-tts) with CUDA-graph capture. Drop reference clips into ~/.local/share/neural-tts-daemon/voices/qwen3-tts/<id>.<en|zh|ja|ko|de|fr|ru|pt|es|it>.{wav,txt}. Latency knobs: TTS_QWEN3_CHUNK_SIZE, TTS_QWEN3_GREEDY, TTS_QWEN3_ATTN. For sub-realtime hardware, set TTS_QWEN3_CHUNKER=1 to enable a sentence-aware chunker + adaptive RTF jitter buffer (TTS_QWEN3_CHUNK_TARGET_CHARS, TTS_QWEN3_CHUNK_HARD_CAP_CHARS, TTS_QWEN3_JITTER_SAFETY_MS, TTS_QWEN3_JITTER_INITIAL_MS)."

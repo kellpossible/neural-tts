@@ -1,18 +1,19 @@
 """Qwen3-TTS provider (faster-qwen3-tts backend).
 
-Implements warmup / list_voices / synthesize_stream / shutdown against the
-neural-tts-daemon provider protocol. Voices are user-supplied reference
-clips with transcripts (see voices.py).
-
 Streaming: drives `FasterQwen3TTS.generate_voice_clone_streaming(...)`
 and forwards each yielded PCM chunk to the daemon. The wrapper streams
 natively from the codec, so we hand it the whole utterance — no text
-chunker.
+chunker by default.
 
-Voice-prompt caching: faster-qwen3-tts keeps an internal
-`_voice_prompt_cache` keyed by (ref_audio, ref_text), so simply passing
-the same paths/text reuses the precomputed ref_code + speaker embedding.
-We don't need to manage a cache here.
+Voice-prompt caching: faster-qwen3-tts keeps an internal cache keyed
+by (ref_audio, ref_text). Passing the same paths/text reuses the
+precomputed ref_code + speaker embedding.
+
+Optional jitter-buffered mode (TTS_QWEN3_CHUNKER=1): split the input
+via .chunker, then for each piece run an adaptive-prebuffer bridge
+that holds back PCM until enough audio is accumulated to cover the
+estimated synth deficit (D*(1-RTF)/RTF + safety). Trades TTFA for
+gap-free playback when sustained RTF < 1.
 """
 
 from __future__ import annotations
@@ -20,16 +21,24 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 
 import numpy as np
 
+from . import chunker
 from . import voices as voices_mod
 from .engine import DEFAULT_SAMPLE_RATE, build_qwen3_tts
 from .pb import neural_tts_pb2 as pb
 from .voices import LANG_TO_QWEN, VoiceEntry
 
 log = logging.getLogger("neural_tts_provider_qwen3_tts.provider")
+
+# faster-qwen3-tts emits one codec step at 12 Hz per step in the timing dict.
+CODEC_HZ = 12
 
 
 def _env_int(name: str, default: int) -> int:
@@ -59,6 +68,42 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in ("1", "true", "yes", "on")
+
+
+def _chunker_enabled() -> bool:
+    return _env_bool("TTS_QWEN3_CHUNKER", False)
+
+
+@dataclass
+class _StreamStats:
+    """Rolling RTF + chars/sec across pieces of a single request.
+
+    Persists across chunks so that estimates improve after the first
+    piece is calibrated.
+    """
+    audio_s: float = 0.0
+    wall_s: float = 0.0
+    chars: int = 0
+
+    def update_from_timing(self, timing: dict, chunk_audio_s: float) -> None:
+        """Accumulate one yield from the model."""
+        self.audio_s += chunk_audio_s
+        ms = float(timing.get("decode_ms") or 0.0) + float(timing.get("prefill_ms") or 0.0)
+        self.wall_s += ms / 1000.0
+
+    def add_chars(self, n: int) -> None:
+        self.chars += n
+
+    @property
+    def rtf(self) -> float | None:
+        if self.wall_s <= 0:
+            return None
+        return self.audio_s / self.wall_s
+
+    def chars_per_sec(self, bootstrap: float) -> float:
+        if self.audio_s <= 0 or self.chars <= 0:
+            return bootstrap
+        return self.chars / self.audio_s
 
 
 class Qwen3TTSProvider:
@@ -147,16 +192,40 @@ class Qwen3TTSProvider:
             log.warning("Qwen3-TTS has no speed knob; ignoring speed=%.2f", speed)
 
         gen_kwargs = self._build_gen_kwargs(text)
+        use_chunker = _chunker_enabled()
         log.info(
-            "synth voice=%s lang=%s chars=%d chunk_size=%d greedy=%s",
+            "synth voice=%s lang=%s chars=%d chunk_size=%d greedy=%s chunker=%s",
             voice, entry.lang, len(text),
             gen_kwargs.get("chunk_size"),
             not gen_kwargs.get("do_sample", True),
+            "on" if use_chunker else "off",
         )
 
-        async for pcm in self._bridge_stream(entry, text, gen_kwargs):
-            if pcm.size:
-                yield pcm
+        if not use_chunker:
+            # Fast path — unchanged behaviour, raw passthrough.
+            async for pcm in self._bridge_stream(entry, text, gen_kwargs):
+                if pcm.size:
+                    yield pcm
+            return
+
+        # Buffered path — chunker + per-piece adaptive jitter buffer.
+        stats = _StreamStats()
+        pieces = list(chunker.chunk(text, entry.lang))
+        log.info("chunker produced %d piece(s) (target=%d, hard_cap=%d)",
+                 len(pieces), chunker.TARGET_CHARS, chunker.HARD_CAP_CHARS)
+        request_start = time.monotonic()
+        for i, piece in enumerate(pieces):
+            async for pcm in self._bridge_stream_buffered(entry, piece, gen_kwargs, stats, i):
+                if pcm.size:
+                    yield pcm
+        request_wall = time.monotonic() - request_start
+        log.info(
+            "synth done: pieces=%d total_audio=%.2fs synth_wall=%.2fs "
+            "request_wall=%.2fs rolling_rtf=%s chars_per_sec=%.1f",
+            len(pieces), stats.audio_s, stats.wall_s, request_wall,
+            f"{stats.rtf:.2f}" if stats.rtf is not None else "n/a",
+            stats.chars_per_sec(_env_float("TTS_QWEN3_CHARS_PER_SEC_BOOTSTRAP", 15.0)),
+        )
 
     # ── streaming bridge: sync generator → async iterator ──────────────
 
@@ -166,17 +235,22 @@ class Qwen3TTSProvider:
         text: str,
         gen_kwargs: dict,
     ) -> AsyncIterator[np.ndarray]:
+        """Fast-path bridge — emit PCM as soon as the model yields it."""
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[Any] = asyncio.Queue()
         sentinel: object = object()
+        cancel = threading.Event()
 
         def producer() -> None:
             try:
                 self._run_streaming(
                     entry, text, gen_kwargs,
-                    emit=lambda pcm: loop.call_soon_threadsafe(queue.put_nowait, pcm),
+                    emit=lambda pcm, _timing: loop.call_soon_threadsafe(
+                        queue.put_nowait, pcm
+                    ),
+                    cancel=cancel,
                 )
-            except BaseException as e:  # noqa: BLE001 — re-raised on consumer
+            except BaseException as e:  # noqa: BLE001
                 loop.call_soon_threadsafe(queue.put_nowait, e)
             else:
                 loop.call_soon_threadsafe(queue.put_nowait, sentinel)
@@ -191,10 +265,142 @@ class Qwen3TTSProvider:
                     raise item
                 yield item  # type: ignore[misc]
         finally:
+            cancel.set()
             try:
                 await task
             except Exception:
                 pass
+
+    async def _bridge_stream_buffered(
+        self,
+        entry: VoiceEntry,
+        piece: str,
+        gen_kwargs: dict,
+        stats: _StreamStats,
+        piece_index: int,
+    ) -> AsyncIterator[np.ndarray]:
+        """Adaptive-prebuffer bridge for one chunker piece.
+
+        Holds PCM in a deque until either (a) we've accumulated enough
+        audio to cover the expected synth deficit, or (b) the producer
+        signals end-of-piece. Once unblocked, switches to passthrough
+        for the rest of the piece.
+        """
+        bootstrap_cps = _env_float("TTS_QWEN3_CHARS_PER_SEC_BOOTSTRAP", 15.0)
+        safety_s = _env_int("TTS_QWEN3_JITTER_SAFETY_MS", 200) / 1000.0
+        initial_s = _env_int("TTS_QWEN3_JITTER_INITIAL_MS", 500) / 1000.0
+
+        est_D = max(1.0, len(piece) / stats.chars_per_sec(bootstrap_cps))
+        rtf = stats.rtf
+        if rtf is None:
+            target_s = initial_s
+            target_src = "initial"
+        elif rtf >= 1.0:
+            target_s = 0.0
+            target_src = "fast-path"
+        else:
+            target_s = est_D * (1.0 - rtf) / rtf + safety_s
+            target_src = f"rtf={rtf:.2f}"
+        log.info(
+            "piece=%d chars=%d est_D=%.2fs target_prebuffer=%.2fs (%s)",
+            piece_index, len(piece), est_D, target_s, target_src,
+        )
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        sentinel: object = object()
+        cancel = threading.Event()
+
+        def producer() -> None:
+            try:
+                self._run_streaming(
+                    entry, piece, gen_kwargs,
+                    emit=lambda pcm, timing: loop.call_soon_threadsafe(
+                        queue.put_nowait, (pcm, timing)
+                    ),
+                    cancel=cancel,
+                )
+            except BaseException as e:  # noqa: BLE001
+                loop.call_soon_threadsafe(queue.put_nowait, e)
+            else:
+                loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+        task = asyncio.create_task(asyncio.to_thread(producer))
+        stats.add_chars(len(piece))
+
+        buf: deque[np.ndarray] = deque()
+        buf_s = 0.0
+        passthrough = (target_s <= 0.0)
+
+        piece_start = time.monotonic()
+        prebuffer_fill_wall_s: float | None = None
+        piece_audio_s = 0.0
+        chunks_emitted = 0
+        # Track the snapshot of stats at piece start so we can derive a
+        # per-piece RTF (the rolling stats include all earlier pieces).
+        piece_stats_audio_start = stats.audio_s
+        piece_stats_wall_start = stats.wall_s
+
+        try:
+            while True:
+                item = await queue.get()
+                if item is sentinel:
+                    # End-of-piece flush. Anything still in buf means the
+                    # producer finished before the prebuffer target was hit —
+                    # i.e. piece was shorter than estimated, so we just emit
+                    # whatever we accumulated.
+                    while buf:
+                        yield buf.popleft()
+                        chunks_emitted += 1
+                    # Per-piece summary
+                    piece_wall = time.monotonic() - piece_start
+                    piece_audio_synth = stats.audio_s - piece_stats_audio_start
+                    piece_synth_wall = stats.wall_s - piece_stats_wall_start
+                    piece_rtf = (
+                        piece_audio_synth / piece_synth_wall
+                        if piece_synth_wall > 0 else float("nan")
+                    )
+                    log.info(
+                        "piece=%d done: audio=%.2fs synth_wall=%.2fs piece_rtf=%.2f "
+                        "wall_elapsed=%.2fs prebuffer_fill=%s chunks_out=%d",
+                        piece_index, piece_audio_synth, piece_synth_wall, piece_rtf,
+                        piece_wall,
+                        f"{prebuffer_fill_wall_s:.2f}s" if prebuffer_fill_wall_s is not None else "none",
+                        chunks_emitted,
+                    )
+                    return
+                if isinstance(item, BaseException):
+                    raise item
+                pcm, timing = item  # type: ignore[misc]
+                chunk_audio_s = pcm.size / float(self.sample_rate)
+                stats.update_from_timing(timing, chunk_audio_s)
+                piece_audio_s += chunk_audio_s
+                if passthrough:
+                    yield pcm
+                    chunks_emitted += 1
+                    continue
+                buf.append(pcm)
+                buf_s += chunk_audio_s
+                if buf_s >= target_s:
+                    prebuffer_fill_wall_s = time.monotonic() - piece_start
+                    log.info(
+                        "piece=%d prebuffer filled: audio=%.2fs (target %.2fs) "
+                        "after wall=%.2fs rolling_rtf=%s; switching to passthrough",
+                        piece_index, buf_s, target_s, prebuffer_fill_wall_s,
+                        f"{stats.rtf:.2f}" if stats.rtf is not None else "n/a",
+                    )
+                    passthrough = True
+                    while buf:
+                        yield buf.popleft()
+                        chunks_emitted += 1
+        finally:
+            cancel.set()
+            try:
+                await task
+            except Exception:
+                pass
+
+    # ── synchronous helpers (run inside a worker thread) ───────────────
 
     def _run_streaming(
         self,
@@ -202,12 +408,14 @@ class Qwen3TTSProvider:
         text: str,
         gen_kwargs: dict,
         *,
-        emit: Callable[[np.ndarray], None],
+        emit: Callable[[np.ndarray, dict], None],
+        cancel: threading.Event | None = None,
     ) -> None:
         """Drive FasterQwen3TTS.generate_voice_clone_streaming(...).
 
-        Yields are `(np.ndarray float32, sample_rate int, timing dict)`. We
-        track the model-reported sample rate; emit() forwards only PCM.
+        Yields are `(pcm, sample_rate, timing dict)`. emit() receives
+        (pcm, timing); the consumer is responsible for forwarding only
+        PCM downstream.
         """
         assert self._model is not None
         gen = self._model.generate_voice_clone_streaming(
@@ -219,6 +427,13 @@ class Qwen3TTSProvider:
         )
         first_timing_logged = False
         for chunk, sr, timing in gen:
+            if cancel is not None and cancel.is_set():
+                log.info("cancel event received; aborting model generator")
+                try:
+                    gen.close()
+                except Exception:
+                    pass
+                return
             if sr and sr != self.sample_rate:
                 log.info("sample_rate %d → %d", self.sample_rate, sr)
                 self.sample_rate = int(sr)
@@ -227,7 +442,7 @@ class Qwen3TTSProvider:
                 first_timing_logged = True
             arr = np.asarray(chunk, dtype=np.float32).reshape(-1)
             if arr.size:
-                emit(arr)
+                emit(arr, timing if isinstance(timing, dict) else {})
 
     def _drain_warmup(self, entry: VoiceEntry) -> None:
         """Eager warmup: capture CUDA graphs by running one tiny synth."""
@@ -235,27 +450,24 @@ class Qwen3TTSProvider:
         try:
             self._run_streaming(
                 entry, "Warming up.", gen_kwargs,
-                emit=lambda _pcm: None,
+                emit=lambda _pcm, _timing: None,
             )
         except Exception:
             log.exception("warmup streaming synth failed")
 
     def _build_gen_kwargs(self, text: str) -> dict:
-        """Generation kwargs forwarded to generate_voice_clone_streaming.
-
-        faster-qwen3-tts uses:
-          chunk_size (default 12)   — codec-frame batching before each yield;
-                                       lower = lower TTFA, slightly more overhead.
-          max_new_tokens (2048)     — capped here to a per-char budget to keep
-                                       short utterances from running long.
-          do_sample/temperature/... — sampling controls; TTS_QWEN3_GREEDY=1
-                                       switches to argmax (small steady win).
-        """
         per_char = _env_int("TTS_QWEN3_MAX_NEW_TOKENS_PER_CHAR", 6)
         out: dict = {
             "max_new_tokens": min(2048, 32 + per_char * len(text)),
             "chunk_size": _env_int("TTS_QWEN3_CHUNK_SIZE", 12),
         }
+        # TTS_QWEN3_GREEDY=1 switches from sampled decoding (default) to
+        # greedy decoding: always pick the highest-probability next token
+        # instead of sampling from the temperature/top-k/top-p distribution.
+        # Modest speedup (skips the sampler step per token), fully
+        # deterministic output, slightly less prosodic variation. Usually a
+        # win for voice-clone TTS because the reference clip already pins
+        # down voice character; drop it if synthesis sounds robotic.
         if _env_bool("TTS_QWEN3_GREEDY"):
             out["do_sample"] = False
         else:
