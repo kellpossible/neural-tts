@@ -195,6 +195,19 @@ env = { TTS_OMNIVOICE_NUM_STEP = "24", TTS_OMNIVOICE_DEVICE = "cuda:0" }
 Values must be strings (TOML's typed values get coerced). The env table
 overrides any same-named variable from the daemon's own environment.
 
+Per-provider locale overrides (`[providers.<name>.locales]`) replace
+the provider-declared BCP-47 tag on matching voices and can fan a single
+voice out across multiple locales. Keys are fnmatch globs against the
+voice id; the first matching glob wins, and the first tag in the list
+becomes the primary language while the rest are advertised as additional
+locales in `LIST VOICES`:
+
+```toml
+[providers.kokoro-onnx.locales]
+"af_*" = ["en-US", "en-AU"]
+"bf_*" = ["en-GB", "en-AU", "en-NZ"]
+```
+
 Environment overrides (set in a service drop-in):
 
 | Var | Default | Effect |

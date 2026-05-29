@@ -105,6 +105,7 @@ class VoiceIndex:
                         language=v.language,
                         gender=v.gender,
                         display_name=v.display_name,
+                        extra_languages=v.extra_languages,
                     )
                     log.info(
                         "voice id %r collision across providers; exposing %s as %r",

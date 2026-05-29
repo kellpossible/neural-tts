@@ -65,6 +65,11 @@ class ProviderSettings:
     """
     voices: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    # Voice-id glob → list of BCP-47 tags. When a voice id matches, the
+    # provider-declared language is *replaced* with this list (first tag
+    # becomes the primary, the rest are advertised as additional locales).
+    # Declaration order in TOML decides precedence — first matching glob wins.
+    locales: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -84,9 +89,16 @@ class DaemonConfig:
         providers: dict[str, ProviderSettings] = {}
         for name, settings in providers_raw.items():
             raw_env = settings.get("env") or {}
+            raw_locales = settings.get("locales") or {}
+            locales: dict[str, list[str]] = {}
+            for pattern, tags in raw_locales.items():
+                if isinstance(tags, str):
+                    tags = [tags]
+                locales[str(pattern)] = [str(t) for t in tags if str(t).strip()]
             providers[name] = ProviderSettings(
                 voices=list(settings.get("voices") or []),
                 env={str(k): str(v) for k, v in raw_env.items()},
+                locales=locales,
             )
         return cls(
             provider=ProviderConfig(**raw.get("provider", {})),

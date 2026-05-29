@@ -85,6 +85,9 @@ async def run(args: argparse.Namespace) -> int:
         eager_startup=config.supervisor.eager_startup,
         voice_allowlists={name: s.voices for name, s in config.providers.items()},
         provider_envs={name: dict(s.env) for name, s in config.providers.items() if s.env},
+        voice_locale_overrides={
+            name: s.locales for name, s in config.providers.items() if s.locales
+        },
     )
 
     adopted = _adopt_systemd_sockets()

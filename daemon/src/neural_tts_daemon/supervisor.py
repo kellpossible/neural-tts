@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import fnmatch
 import logging
 import os
 import socket
@@ -56,6 +57,16 @@ _GENDER_FROM_PB = {
     pb.FEMALE: "FEMALE",
     pb.NEUTRAL: "NEUTRAL",
 }
+
+
+def _match_locale_override(
+    voice_id: str, entries: list[tuple[str, list[str]]]
+) -> list[str] | None:
+    """Return the tag list of the first glob that matches, or None."""
+    for pattern, tags in entries:
+        if fnmatch.fnmatchcase(voice_id, pattern):
+            return tags
+    return None
 
 
 def _voice_from_pb(v: pb.Voice) -> Voice:
@@ -136,6 +147,7 @@ class Supervisor:
         eager_startup: bool = False,
         voice_allowlists: dict[str, list[str]] | None = None,
         provider_envs: dict[str, dict[str, str]] | None = None,
+        voice_locale_overrides: dict[str, dict[str, list[str]]] | None = None,
     ) -> None:
         self.default_provider = default_provider
         self.idle_timeout_seconds = idle_timeout_seconds
@@ -151,6 +163,14 @@ class Supervisor:
         self._provider_envs = {
             name: dict(env) for name, env in (provider_envs or {}).items() if env
         }
+        # provider_name → list of (glob, [BCP-47 tag, ...]) pairs. Preserves
+        # declaration order so the first matching glob wins.
+        self._voice_locale_overrides: dict[str, list[tuple[str, list[str]]]] = {}
+        for name, mapping in (voice_locale_overrides or {}).items():
+            entries = [(pat, [t for t in tags if t]) for pat, tags in mapping.items()]
+            entries = [e for e in entries if e[1]]
+            if entries:
+                self._voice_locale_overrides[name] = entries
         full_registry = load_registry()
         allowed = set(enabled_providers or [])
         for name in allowed:
@@ -240,6 +260,36 @@ class Supervisor:
                         name, len(filtered), len(voices), sorted(allow),
                     )
                 out[name] = filtered
+
+        # Apply per-provider locale overrides, if configured. Replaces the
+        # provider-declared language; first matching glob wins.
+        for name, voices in list(out.items()):
+            overrides = self._voice_locale_overrides.get(name)
+            if not overrides:
+                continue
+            patched: list[Voice] = []
+            hits = 0
+            for v in voices:
+                tags = _match_locale_override(v.id, overrides)
+                if tags is None:
+                    patched.append(v)
+                    continue
+                hits += 1
+                patched.append(
+                    Voice(
+                        id=v.id,
+                        language=tags[0],
+                        gender=v.gender,
+                        display_name=v.display_name,
+                        extra_languages=tuple(tags[1:]),
+                    )
+                )
+            if hits:
+                log.info(
+                    "voice locale override for %s: %d/%d voices remapped",
+                    name, hits, len(voices),
+                )
+            out[name] = patched
 
         # Populate the index from what we got.
         self._voice_index.clear()

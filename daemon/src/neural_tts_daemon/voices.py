@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 # Kokoro voice-prefix → (speechd-language, gender) reference.
@@ -37,6 +37,11 @@ class Voice:
     language: str
     gender: str  # "MALE", "FEMALE", "NEUTRAL"
     display_name: str | None = None
+    # Additional BCP-47 tags the voice should also be advertised under.
+    # Populated when config.toml's `[providers.<name>.locales]` overrides
+    # the provider-declared language with multiple tags; `language` holds
+    # the first override, `extra_languages` the rest.
+    extra_languages: tuple[str, ...] = field(default_factory=tuple)
 
     def to_json(self) -> dict:
         return {
@@ -44,6 +49,7 @@ class Voice:
             "language": self.language,
             "gender": self.gender,
             "display_name": self.display_name,
+            "extra_languages": list(self.extra_languages),
         }
 
     @classmethod
@@ -53,4 +59,5 @@ class Voice:
             language=raw["language"],
             gender=raw["gender"],
             display_name=raw.get("display_name"),
+            extra_languages=tuple(raw.get("extra_languages") or ()),
         )

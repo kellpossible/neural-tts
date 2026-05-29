@@ -617,15 +617,23 @@ def cmd_list_voices(line: str) -> None:
     for v in voices:
         voice_id = v["id"]
         raw_lang = v.get("language") or ""
-        lang = _normalize_lang(raw_lang) if raw_lang else "none"
+        primary = _normalize_lang(raw_lang) if raw_lang else "none"
+        # Honor the daemon's per-provider locale override fan-out: each entry
+        # in extra_languages gets its own LIST VOICES row alongside `primary`.
+        extras = [_normalize_lang(t) for t in (v.get("extra_languages") or []) if t]
         # See _GENDER_TO_VARIANT comment: always "none" so the plugin
         # doesn't end up with QLocale("en-gb_male").
         variant = "none"
-        name = _pick_display_name(v, lang)
-        _emit(name, voice_id, lang, variant)
-        if lang.lower().startswith("en-") and lang != US_LANG:
-            us_name = _pick_display_name(v, US_LANG)
-            _emit(us_name, voice_id, US_LANG, variant)
+        seen_langs: set[str] = set()
+        for lang in (primary, *extras):
+            if not lang or lang in seen_langs:
+                continue
+            seen_langs.add(lang)
+            name = _pick_display_name(v, lang)
+            _emit(name, voice_id, lang, variant)
+            if lang.lower().startswith("en-") and lang != US_LANG:
+                us_name = _pick_display_name(v, US_LANG)
+                _emit(us_name, voice_id, US_LANG, variant)
 
     if one:
         breakdown = ", ".join(f"{l}={n}" for l, n in sorted(sent_langs.items()))
