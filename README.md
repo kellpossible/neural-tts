@@ -22,8 +22,6 @@ Currently `speech-dispatcher` on Linux is supported, with five providers:
   voice cloning, native streaming, 10 languages. Optional RTF-aware jitter
   buffer for sub-realtime hardware.
 
-The daemon-↔-provider protocol is provider-agnostic so other engines can be plugged in later.
-
 ## Why
 
 KDE Plasma 6 routes TTS through `qt6-qtspeech-speechd` → `speech-dispatcher`.
