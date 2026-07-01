@@ -129,5 +129,9 @@ daemon/.venv/bin/python -m grpc_tools.protoc -Iproto \
     --python_out=providers/omnivoice/src/neural_tts_provider_omnivoice/pb \
     --pyi_out=providers/omnivoice/src/neural_tts_provider_omnivoice/pb \
     proto/neural_tts.proto
+daemon/.venv/bin/python -m grpc_tools.protoc -Iproto \
+    --python_out=providers/pocket-tts/src/neural_tts_provider_pocket_tts/pb \
+    --pyi_out=providers/pocket-tts/src/neural_tts_provider_pocket_tts/pb \
+    proto/neural_tts.proto
 echo "Regenerated neural_tts_pb2.py in all provider packages."
 '''

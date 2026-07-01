@@ -33,6 +33,14 @@ supports_cloning = true
 needs_models = true
 notes = "Zero-shot voice cloning, 600+ languages, GPU recommended. Drop reference clips into ~/.local/share/neural-tts-daemon/voices/omnivoice/<id>.<lang>.wav; optional <id>.<lang>.txt overrides Whisper auto-transcription."
 
+[providers.pocket-tts]
+display_name = "Pocket-TTS (Kyutai, 100M CPU)"
+project_dir = "providers/pocket-tts"
+python_module = "neural_tts_provider_pocket_tts"
+supports_cloning = true
+needs_models = true
+notes = "Kyutai pocket-tts. CPU-only, ~26 built-in preset voices (alba, giovanni, lola, ...). Zero-shot cloning: drop reference clips into ~/.local/share/neural-tts-daemon/voices/pocket-tts/<id>.<lang>.wav (no transcript needed); optional <id>.<lang>.toml sidecar sets display_name/gender. Computed voice states cached under ~/.cache/neural-tts-daemon/pocket-tts/."
+
 [providers.qwen3-tts]
 display_name = "Qwen3-TTS (0.6B, streaming)"
 project_dir = "providers/qwen3-tts"

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import textwrap
 import urllib.request
 from pathlib import Path
 
@@ -168,6 +169,61 @@ def _fetch_qwen3_tts(dest_dir: Path) -> None:
     _hf_snapshot(venv_python, QWEN3_TTS_HF_REPO, dest_dir / QWEN3_TTS_DIR_NAME)
 
 
+def _fetch_pocket_tts(dest_dir: Path) -> None:
+    """Warm pocket-tts' weights and every preset voice embedding.
+
+    pocket-tts downloads its model from Hugging Face at `TTSModel.load_model()`
+    time (into the standard HF cache, not `dest_dir`). Each preset voice also
+    resolves to a small precomputed embedding fetched lazily on first use. The
+    daemon runs the provider with a read-only HF cache (see engine.py), so we
+    pre-fetch the model plus every preset embedding here, exercising the real
+    `get_state_for_audio_prompt` path so the pinned revisions land in the cache.
+
+    Presets that need the gated voice-cloning repo (kyutai/pocket-tts) are
+    skipped with a warning rather than aborting the whole download — enable that
+    model separately (accept the terms + `hf auth login`) if you want cloning.
+    """
+    venv_python = repo_root() / "providers" / "pocket-tts" / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        die(
+            f"pocket-tts venv python not found at {venv_python}; "
+            "run `mise run install-provider pocket-tts --skip-models` first"
+        )
+    info("downloading pocket-tts weights + preset embeddings (cached in the HF cache)")
+    # load_model() attempts the gated cloning weights (kyutai/pocket-tts) first
+    # and silently falls back to the public presets-only model when they can't be
+    # fetched; whether cloning is available is reported via m.has_voice_cloning.
+    # HF picks up credentials from `hf auth login` / HF_TOKEN automatically, so a
+    # user who has accepted the gated terms gets the cloning weights cached here.
+    snippet = textwrap.dedent(
+        """
+        from pocket_tts import TTSModel
+        from neural_tts_provider_pocket_tts.voices import PRESET_VOICES
+        m = TTSModel.load_model()
+        cached, skipped = [], []
+        for name in PRESET_VOICES:
+            try:
+                m.get_state_for_audio_prompt(name)
+                cached.append(name)
+            except Exception as e:
+                skipped.append((name, type(e).__name__))
+        print("pocket-tts model ready, sample_rate=%d" % int(m.sample_rate))
+        print("cached %d/%d preset embeddings" % (len(cached), len(PRESET_VOICES)))
+        if skipped:
+            print("skipped (need gated/other weights): %r" % (skipped,))
+        if getattr(m, "has_voice_cloning", False):
+            print("voice cloning: ENABLED (gated kyutai/pocket-tts weights cached)")
+        else:
+            print("voice cloning: unavailable (presets only). To enable, accept the "
+                  "terms at https://huggingface.co/kyutai/pocket-tts, run `hf auth "
+                  "login`, then re-run `mise run download-models pocket-tts`.")
+        """
+    )
+    result = subprocess.run([str(venv_python), "-c", snippet])
+    if result.returncode != 0:
+        die(f"pocket-tts model warm failed (exit {result.returncode})", code=result.returncode)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="download_models.py")
     parser.add_argument("provider", nargs="?", default="kokoro-onnx")
@@ -201,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
         _fetch_omnivoice(dest)
     elif args.provider == "qwen3-tts":
         _fetch_qwen3_tts(dest)
+    elif args.provider == "pocket-tts":
+        _fetch_pocket_tts(dest)
     else:
         die(f"download_models: provider {args.provider!r} has no built-in download spec yet")
     info(f"models in {dest}")

@@ -2,10 +2,13 @@
 
 A bridge between operating system TTS interface and various newly available TTS libraries.
 
-Currently `speech-dispatcher` on Linux is supported, with five providers:
+Currently `speech-dispatcher` on Linux is supported, with six providers:
 
 - **kokoro-onnx** — Kokoro-82M via ONNX runtime. CPU or GPU, dozens of
   pre-baked voices, multilingual.
+- **pocket-tts** — Kyutai's [pocket-tts](https://github.com/kyutai-labs/pocket-tts)
+  100M model. CPU-only, ~26 built-in preset voices plus zero-shot voice cloning
+  from user-supplied reference clips.
 - **longcat-audiodit** — Meituan's [LongCat-AudioDiT](https://github.com/meituan-longcat/LongCat-AudioDiT)
   1B diffusion model. CUDA-only, zero-shot voice cloning from user-supplied
   reference clips, English + Chinese.
@@ -294,6 +297,53 @@ first chunk; WeTextProcessing-based text normalisation is intentionally
 disabled (it requires `pynini`, which doesn't install cleanly under `uv`),
 so very heavy numeric/abbreviation input may sound less polished than via
 upstream's CLI.
+
+## Pocket-TTS (CPU-only presets + zero-shot voice cloning)
+
+Kyutai's [pocket-tts](https://github.com/kyutai-labs/pocket-tts) is a lightweight
+~100M-parameter model designed to run on CPU (upstream reports GPU gives no
+speedup and ~6× realtime on a MacBook Air M4). It ships ~26 built-in **preset
+voices** and also supports zero-shot **voice cloning** from a single reference
+clip — no transcript needed.
+
+```bash
+# 1. Install the provider — creates its .venv (CPU-only torch) and downloads
+#    the model weights via load_model() into the Hugging Face cache.
+mise run install-provider pocket-tts
+
+# 2a. Preset voices are available immediately. The ~26 built-ins are:
+#     alba anna vera fantine cosette eponine azelma mary jane eve caro_davy
+#     marius javert jean charles paul george michael bill_boerst peter_yearsley
+#     stuart_bell           (English)
+#     giovanni (it) lola (es) juergen (de) rafael (pt) estelle (fr)
+spd-say -o neural-tts -y alba "Hello world from Pocket TTS."
+
+# 2b. (Optional) Clone a voice — drop reference clips into the user-voices dir.
+#     Each "voice" is one wav:
+#       <voice-id>.<lang>.wav    ← a few seconds of clean reference audio
+#     lang is a short tag: en, it, es, de, fr, pt, nl, pl, ja, zh, ko, ru
+#     Optional sidecar:
+#       <voice-id>.<lang>.toml   ← { display_name = "...", gender = "female" }
+#     (Preset names like "alba" are reserved — pick a different id.)
+mkdir -p ~/.local/share/neural-tts-daemon/voices/pocket-tts
+cp my-clip.wav ~/.local/share/neural-tts-daemon/voices/pocket-tts/myvoice.en.wav
+
+# 3. Refresh the global voice index (only needed after dropping new clips)
+bin/neural-tts-ctl reload-voices
+
+# 4. Speak with the cloned voice — the daemon auto-routes by voice id
+spd-say -o neural-tts -y myvoice "Hello world from my cloned voice."
+```
+
+Cloning a clip is relatively slow, so each computed voice state is cached as a
+safetensors file under `~/.cache/neural-tts-daemon/pocket-tts/` (keyed by the
+wav's mtime) and reused on later runs. Env knobs: `TTS_POCKET_CPU_THREADS`
+(torch thread count) and `TTS_POCKET_LANGUAGE` (model language; default English).
+
+Limitations: the daemon's `speed` knob is ignored (no native speed control).
+The default model is English-centric; the non-English presets work via their
+reference conditioning, and for other-language cloning set `TTS_POCKET_LANGUAGE`
+if upstream ships a matching model.
 
 ## OmniVoice (massively multilingual zero-shot cloning)
 
