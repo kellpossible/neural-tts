@@ -74,6 +74,7 @@ KDE app → QtSpeech → speech-dispatcher → sd_generic → bin/sd-neural-tts
 - `pulseaudio-utils` or `pipewire-pulse` (provides `paplay`)
 - `espeak-ng` (Kokoro uses it via the `misaki` G2P library)
 - [`mise`](https://mise.jdx.dev/) to manage tools and run tasks
+- (optional) `ffmpeg` — only for MP3/Opus output from `neural-tts-say`; WAV needs nothing
 
 On Fedora 44:
 
@@ -121,9 +122,43 @@ select *Speech Dispatcher*, pick a kokoro voice (`af_heart`, `am_adam`, …).
 | `status` | `neural-tts-ctl status` |
 | `reload-voices` | Rebuild the global voice index (re-enumerate every enabled provider) |
 | `voices` | List speechd-visible voices |
+| `say "…" -o out.wav` | Render text to a wav/mp3/opus file (`bin/neural-tts-say`) |
 | `logs` | `journalctl --user -u neural-tts.service -f` |
 | `test` | Run pytest |
 | `gen-proto` | Regenerate `*_pb2.py` from `proto/neural_tts.proto` |
+
+## Rendering audio files (audiobooks)
+
+`bin/neural-tts-say` renders text straight to an audio file through the running
+daemon — handy for narration and audiobooks. It drives the same synthesis socket
+as the speech-dispatcher module, so there's nothing to set up beyond a running
+daemon with at least one enabled provider.
+
+```bash
+# Text as an argument → WAV (format inferred from the extension)
+bin/neural-tts-say "Chapter one. The morning was bright and cold." \
+    --voice charles -o chapter1.wav
+
+# Pipe text in on stdin; MP3/Opus are encoded via ffmpeg
+cat chapter1.txt | bin/neural-tts-say --voice charles -o chapter1.mp3
+bin/neural-tts-say -f book.txt --voice charles -o book.opus
+
+# List the voice ids available across every enabled provider
+bin/neural-tts-say --list-voices
+
+# Same thing via mise (extra args are forwarded)
+mise run say "Hello there." --voice charles -o hello.wav
+```
+
+- **Input** comes from a positional argument, `--file/-f PATH`, or piped stdin.
+- **Output** is set with `-o`; the format follows the extension (`.wav`, `.mp3`,
+  `.opus`) or an explicit `--format`. `-o -` streams to stdout (needs `--format`).
+  WAV uses the Python stdlib (zero extra deps); MP3/Opus are piped through
+  `ffmpeg` (a clear error is printed if it isn't installed).
+- **Long text** (a whole book) is split into segments and each is streamed into
+  the encoder as it arrives, so memory stays flat regardless of length. Tune the
+  segment size with `--max-chars` (default 2000). Other flags: `--voice`,
+  `--speed` (0.5–2.0), `--lang`.
 
 ## Files installed (user scope)
 

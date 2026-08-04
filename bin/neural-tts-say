@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""neural-tts-say — render text to audio files (wav/mp3/opus) via the daemon.
+
+Reads text from a positional argument, a --file, or piped stdin, synthesizes it
+through the running neural-tts daemon's synthesis socket, and writes the result
+as WAV (stdlib, zero deps), or MP3/Opus (piped through ffmpeg).
+
+Long inputs (whole audiobooks) are split into segments and each segment is
+streamed into the encoder as it arrives, so peak memory stays flat regardless of
+how much text is rendered.
+
+Voice routing is entirely daemon-side: pass a voice id (see --list-voices) and
+the daemon picks the owning provider. This is a plain synthesis-socket client —
+no protocol changes; it speaks the same framed protobuf as bin/sd-neural-tts.
+"""
+
+from __future__ import annotations
+
+# ── Self-relaunch into the daemon's venv so protobuf is on sys.path ──
+import os
+import sys
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parent.parent
+_VENV = _REPO / "daemon" / ".venv"
+_DAEMON_PY = _VENV / "bin" / "python"
+# Detect by sys.prefix, not sys.executable (uv may hard-link the interpreter, so
+# comparing executable paths yields a false positive). sys.prefix is venv-aware.
+if Path(sys.prefix).resolve() != _VENV.resolve():
+    if not _DAEMON_PY.exists():
+        sys.stderr.write(
+            f"neural-tts-say: daemon venv missing at {_VENV}; run `mise run sync-daemon`\n"
+        )
+        sys.exit(1)
+    os.execv(str(_DAEMON_PY), [str(_DAEMON_PY), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+# From here we're running under daemon/.venv/bin/python.
+sys.path.insert(0, str(_REPO / "daemon" / "src"))
+
+import argparse
+import json
+import re
+import shutil
+import socket
+import struct
+import subprocess
+
+from google.protobuf.message import DecodeError
+
+from neural_tts_daemon.pb import neural_tts_pb2 as pb
+
+# ── Config / constants ───────────────────────────────────────────────────
+
+XDG_RUNTIME = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+SYNTH_SOCKET_PATH = os.environ.get("NEURAL_TTS_SOCKET", f"{XDG_RUNTIME}/neural-tts.sock")
+CONTROL_SOCKET_PATH = os.environ.get(
+    "NEURAL_TTS_CONTROL_SOCKET", f"{XDG_RUNTIME}/neural-tts-control.sock"
+)
+# Per-recv timeout. Generous because a provider may JIT/compile before the first
+# chunk of the first segment (qwen3-tts with torch.compile can be silent 60-180s).
+SYNTH_SOCKET_TIMEOUT = float(os.environ.get("NEURAL_TTS_SYNTH_TIMEOUT", "300"))
+MAX_FRAME = 16 * 1024 * 1024
+WIRE_RATE = 24_000  # daemon emits s16le mono at this rate; header is authoritative
+
+# Client-side segment cap. The daemon streams steadily so this isn't about the
+# socket timeout — it bounds per-request memory and gives natural progress
+# granularity for long renders. Providers still sentence-chunk internally.
+DEFAULT_MAX_CHARS = 2000
+
+
+def _err(msg: str) -> None:
+    print(f"neural-tts-say: {msg}", file=sys.stderr)
+
+
+# ── Framing helpers (same tiny sync framing as neural-tts-ctl / sd-neural-tts) ──
+
+
+def _recv_exact(s: socket.socket, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk:
+            raise IOError("short read from daemon")
+        buf += chunk
+    return bytes(buf)
+
+
+def control_request(req: dict) -> dict:
+    """Round-trip a JSON request on the control socket."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(CONTROL_SOCKET_PATH)
+    try:
+        raw = json.dumps(req, separators=(",", ":")).encode("utf-8")
+        s.sendall(struct.pack(">I", len(raw)) + raw)
+        s.shutdown(socket.SHUT_WR)
+        (length,) = struct.unpack(">I", _recv_exact(s, 4))
+        return json.loads(_recv_exact(s, length).decode("utf-8"))
+    finally:
+        s.close()
+
+
+class SynthConnection:
+    """One synth-socket connection per segment (mirrors sd-neural-tts)."""
+
+    def __init__(self) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(SYNTH_SOCKET_TIMEOUT)
+        self.sock.connect(SYNTH_SOCKET_PATH)
+
+    def send_request(self, voice: str, speed: float, lang: str, text: str) -> None:
+        req = pb.Request(
+            synthesize=pb.SynthesizeRequest(voice=voice, speed=speed, lang=lang, text=text)
+        )
+        raw = req.SerializeToString()
+        self.sock.sendall(struct.pack(">I", len(raw)) + raw)
+        self.sock.shutdown(socket.SHUT_WR)
+
+    def read_response(self) -> pb.Response:
+        (length,) = struct.unpack(">I", _recv_exact(self.sock, 4))
+        if length == 0 or length > MAX_FRAME:
+            raise IOError(f"bad frame length: {length}")
+        msg = pb.Response()
+        try:
+            msg.ParseFromString(_recv_exact(self.sock, length))
+        except DecodeError as e:
+            raise IOError(f"protobuf decode failed: {e}") from e
+        return msg
+
+    def close(self) -> None:
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+# ── Output sinks ─────────────────────────────────────────────────────────
+
+
+class WavSink:
+    """Streaming WAV writer. Patches sizes on close when the file is seekable;
+    otherwise (a pipe) writes 0xFFFFFFFF placeholder sizes, which players accept
+    for streamed WAV."""
+
+    def __init__(self, fileobj, rate: int) -> None:
+        self.f = fileobj
+        self.rate = rate
+        self.data_bytes = 0
+        try:
+            self.seekable = fileobj.seekable()
+        except (AttributeError, OSError):
+            self.seekable = False
+        self._write_header(placeholder=not self.seekable)
+
+    def _write_header(self, placeholder: bool) -> None:
+        data_size = 0xFFFFFFFF if placeholder else self.data_bytes
+        riff_size = 0xFFFFFFFF if placeholder else 36 + self.data_bytes
+        byte_rate = self.rate * 1 * 2  # mono, s16
+        self.f.write(b"RIFF")
+        self.f.write(struct.pack("<I", riff_size))
+        self.f.write(b"WAVE")
+        self.f.write(b"fmt ")
+        self.f.write(struct.pack("<IHHIIHH", 16, 1, 1, self.rate, byte_rate, 2, 16))
+        self.f.write(b"data")
+        self.f.write(struct.pack("<I", data_size))
+
+    def write(self, pcm: bytes) -> None:
+        self.f.write(pcm)
+        self.data_bytes += len(pcm)
+
+    def close(self) -> None:
+        if self.seekable:
+            self.f.seek(4)
+            self.f.write(struct.pack("<I", 36 + self.data_bytes))
+            self.f.seek(40)
+            self.f.write(struct.pack("<I", self.data_bytes))
+        self.f.flush()
+
+
+class FfmpegSink:
+    """Pipe s16le mono into a single long-lived ffmpeg for MP3/Opus."""
+
+    def __init__(self, out: str, fmt: str, rate: int) -> None:
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError(
+                f"ffmpeg not found on PATH — required for {fmt.upper()} output. "
+                "Install ffmpeg, or write WAV instead."
+            )
+        cmd = [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "s16le", "-ar", str(rate), "-ac", "1", "-i", "pipe:0",
+        ]
+        if fmt == "opus":
+            cmd += ["-c:a", "libopus"]
+        if out == "-":
+            # Explicit container to stdout; ffmpeg inherits our stdout fd.
+            cmd += ["-f", "ogg" if fmt == "opus" else "mp3", "pipe:1"]
+        else:
+            cmd += [out]
+        # stdout inherits (writes file, or our fd1 for pipe:1); stderr inherits for errors.
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+
+    def write(self, pcm: bytes) -> None:
+        assert self.proc.stdin is not None
+        self.proc.stdin.write(pcm)
+
+    def close(self) -> None:
+        assert self.proc.stdin is not None
+        self.proc.stdin.close()
+        rc = self.proc.wait()
+        if rc != 0:
+            raise RuntimeError(f"ffmpeg exited with status {rc}")
+
+
+class Output:
+    """Lazily opens the concrete sink on the first audio header (so the WAV rate
+    comes from the daemon, not a hard-coded constant)."""
+
+    def __init__(self, out: str, fmt: str) -> None:
+        self.out = out
+        self.fmt = fmt
+        self._sink = None
+        self._own_file = None
+
+    def ensure(self, rate: int) -> None:
+        if self._sink is not None:
+            return
+        if self.fmt == "wav":
+            if self.out == "-":
+                fileobj = sys.stdout.buffer
+            else:
+                fileobj = open(self.out, "wb")
+                self._own_file = fileobj
+            self._sink = WavSink(fileobj, rate)
+        else:
+            self._sink = FfmpegSink(self.out, self.fmt, rate)
+
+    def write(self, pcm: bytes) -> None:
+        assert self._sink is not None
+        self._sink.write(pcm)
+
+    def close(self) -> None:
+        if self._sink is not None:
+            self._sink.close()
+        if self._own_file is not None:
+            self._own_file.close()
+
+
+# ── Text segmentation ────────────────────────────────────────────────────
+
+
+def split_segments(text: str, max_chars: int) -> list[str]:
+    """Split into blank-line paragraphs, then pack sentences up to max_chars.
+    A single over-long sentence is hard-split as a last resort."""
+    segments: list[str] = []
+    for para in re.split(r"\n\s*\n", text.strip()):
+        para = " ".join(para.split())  # collapse intra-paragraph whitespace/newlines
+        if not para:
+            continue
+        if len(para) <= max_chars:
+            segments.append(para)
+            continue
+        cur = ""
+        for sentence in re.split(r"(?<=[.!?])\s+", para):
+            while len(sentence) > max_chars:  # pathological single sentence
+                if cur:
+                    segments.append(cur)
+                    cur = ""
+                segments.append(sentence[:max_chars])
+                sentence = sentence[max_chars:]
+            if not cur:
+                cur = sentence
+            elif len(cur) + 1 + len(sentence) <= max_chars:
+                cur += " " + sentence
+            else:
+                segments.append(cur)
+                cur = sentence
+        if cur:
+            segments.append(cur)
+    return segments
+
+
+# ── Synthesis ────────────────────────────────────────────────────────────
+
+
+def synth_segment(voice: str, speed: float, lang: str, text: str, out: Output) -> int:
+    """Synthesize one segment, streaming its PCM into `out`. Returns byte count."""
+    conn = SynthConnection()
+    try:
+        conn.send_request(voice, speed, lang, text)
+        resp = conn.read_response()
+        body = resp.WhichOneof("body")
+        if body == "error":
+            raise RuntimeError(resp.error.message)
+        if body != "synthesize_header":
+            raise IOError(f"expected synthesize_header, got {body!r}")
+        out.ensure(resp.synthesize_header.sample_rate or WIRE_RATE)
+
+        nbytes = 0
+        while True:
+            resp = conn.read_response()
+            body = resp.WhichOneof("body")
+            if body == "audio_chunk":
+                out.write(resp.audio_chunk.pcm)
+                nbytes += len(resp.audio_chunk.pcm)
+            elif body == "audio_end":
+                return nbytes
+            elif body == "error":
+                raise RuntimeError(resp.error.message)
+            else:
+                raise IOError(f"unexpected response {body!r} mid-stream")
+    finally:
+        conn.close()
+
+
+# ── Voice resolution ─────────────────────────────────────────────────────
+
+
+def fetch_voices() -> list[dict]:
+    reply = control_request({"op": "list-voices"})
+    if not reply.get("ok"):
+        raise RuntimeError(reply.get("error") or "list-voices failed")
+    return reply.get("voices", [])
+
+
+def resolve_voice(requested: str | None, voices: list[dict]) -> dict:
+    if requested:
+        for v in voices:
+            if v["id"] == requested:
+                return v
+        raise SystemExit(
+            f"neural-tts-say: unknown voice {requested!r}. "
+            "Run `neural-tts-say --list-voices` to see available voices."
+        )
+    if not voices:
+        raise SystemExit("neural-tts-say: no voices available (is any provider enabled?)")
+    chosen = voices[0]
+    _err(f"no --voice given; using {chosen['id']!r} ({chosen.get('provider', '?')})")
+    return chosen
+
+
+# ── Commands ─────────────────────────────────────────────────────────────
+
+
+def cmd_list_voices() -> int:
+    voices = fetch_voices()
+    if not voices:
+        print("(no voices — is any provider enabled?)")
+        return 0
+    width = max(len(v["id"]) for v in voices)
+    for v in voices:
+        print(
+            f"{v['id']:<{width}}  {v['language']:<8}  "
+            f"{(v.get('provider') or '?'):<12}  {v.get('display_name') or ''}"
+        )
+    return 0
+
+
+def read_input_text(args) -> str:
+    if args.text is not None:
+        return args.text
+    if args.file is not None:
+        return Path(args.file).read_text(encoding="utf-8")
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    raise SystemExit(
+        "neural-tts-say: no text given. Pass TEXT, --file PATH, or pipe text on stdin."
+    )
+
+
+def resolve_format(output: str, fmt: str | None) -> str:
+    if fmt:
+        return fmt
+    if output == "-":
+        raise SystemExit("neural-tts-say: --format is required when writing to stdout (-o -).")
+    ext = Path(output).suffix.lower().lstrip(".")
+    if ext in ("wav", "mp3", "opus"):
+        return ext
+    raise SystemExit(
+        f"neural-tts-say: cannot infer format from {output!r}; pass --format wav|mp3|opus."
+    )
+
+
+def cmd_say(args) -> int:
+    text = read_input_text(args)
+    segments = split_segments(text, args.max_chars)
+    if not segments:
+        raise SystemExit("neural-tts-say: input contains no synthesizable text.")
+
+    fmt = resolve_format(args.output, args.format)
+    voice = resolve_voice(args.voice, fetch_voices())
+    lang = args.lang or (voice.get("language") or "en-US").lower()
+    speed = max(0.5, min(2.0, args.speed))
+
+    out = Output(args.output, fmt)
+    total_bytes = 0
+    n = len(segments)
+    try:
+        for i, seg in enumerate(segments, 1):
+            _err(f"[{i}/{n}] synthesizing {len(seg)} chars…")
+            total_bytes += synth_segment(voice["id"], speed, lang, seg, out)
+        out.close()
+    except (FileNotFoundError, ConnectionRefusedError):
+        _err(f"cannot reach daemon at {SYNTH_SOCKET_PATH} — is neural-tts running?")
+        return 1
+    except (RuntimeError, IOError, socket.timeout) as e:
+        _err(f"synthesis failed: {e}")
+        return 1
+
+    seconds = total_bytes / (2 * WIRE_RATE)
+    dest = "stdout" if args.output == "-" else args.output
+    _err(f"done: {n} segment(s), {seconds:.1f}s of audio ({fmt}) → {dest}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="neural-tts-say",
+        description="Render text to WAV/MP3/Opus via the neural-tts daemon.",
+    )
+    parser.add_argument("text", nargs="?", help="Text to synthesize (else --file or stdin).")
+    parser.add_argument("-f", "--file", help="Read text from this file.")
+    parser.add_argument(
+        "-o", "--output",
+        help="Output file; format inferred from extension. Use '-' for stdout.",
+    )
+    parser.add_argument("--format", choices=("wav", "mp3", "opus"), help="Override output format.")
+    parser.add_argument("--voice", help="Voice id (see --list-voices). Default: first available.")
+    parser.add_argument("--speed", type=float, default=1.0, help="0.5–2.0 (default 1.0).")
+    parser.add_argument("--lang", help="BCP-47 language tag (default: the voice's language).")
+    parser.add_argument(
+        "--max-chars", type=int, default=DEFAULT_MAX_CHARS,
+        help=f"Max characters per synthesis segment (default {DEFAULT_MAX_CHARS}).",
+    )
+    parser.add_argument(
+        "--list-voices", action="store_true", help="List available voices and exit."
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        if args.list_voices:
+            return cmd_list_voices()
+        if not args.output:
+            parser.error("the -o/--output argument is required (use '-' for stdout)")
+        return cmd_say(args)
+    except (FileNotFoundError, ConnectionRefusedError):
+        _err(f"cannot reach daemon control socket at {CONTROL_SOCKET_PATH} — is neural-tts running?")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

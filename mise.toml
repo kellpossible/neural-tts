@@ -95,6 +95,10 @@ bin/neural-tts-ctl status
 spd-say -o neural-tts --list-synthesis-voices || true
 '''
 
+[tasks.say]
+description = "Render text to a wav/mp3/opus file via the daemon (bin/neural-tts-say; extra args are forwarded)"
+run = "bin/neural-tts-say"
+
 [tasks.logs]
 description = "Follow daemon journal"
 run = "journalctl --user -u neural-tts.service -f"
