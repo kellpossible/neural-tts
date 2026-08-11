@@ -143,6 +143,9 @@ bin/neural-tts-say "Chapter one. The morning was bright and cold." \
 cat chapter1.txt | bin/neural-tts-say --voice charles -o chapter1.mp3
 bin/neural-tts-say -f book.txt --voice charles -o book.opus
 
+# Narration-sized Opus: mono speech is comfortable at 24k–32k
+bin/neural-tts-say -f book.txt --voice charles --bitrate 24k -o book.opus
+
 # List the voice ids available across every enabled provider
 bin/neural-tts-say --list-voices
 
@@ -155,6 +158,11 @@ mise run say "Hello there." --voice charles -o hello.wav
   `.opus`) or an explicit `--format`. `-o -` streams to stdout (needs `--format`).
   WAV uses the Python stdlib (zero extra deps); MP3/Opus are piped through
   `ffmpeg` (a clear error is printed if it isn't installed).
+- **Bitrate** for MP3/Opus is set with `--bitrate` (any value ffmpeg accepts,
+  e.g. `24k`, `32k`, `96k`); omit it to take the encoder's own default. Opus
+  defaults to around 83 kbps mono, which is generous for narration — `24k`
+  cuts an audiobook to roughly a third of the size with no audible loss.
+  Passing it with WAV is an error, since WAV is uncompressed PCM.
 - **Long text** (a whole book) is split into segments and each is streamed into
   the encoder as it arrives, so memory stays flat regardless of length. Tune the
   segment size with `--max-chars` (default 2000). Other flags: `--voice`,
