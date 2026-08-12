@@ -8,7 +8,7 @@ requires-python = ">=3.11,<3.13"
 # a checkout. Bump = edit the @<SHA> tail and re-run `mise run install-provider
 # omnivoice`. Upstream repo: https://github.com/k2-fsa/OmniVoice
 dependencies = [
-    "omnivoice @ git+https://github.com/k2-fsa/OmniVoice.git@33a8ca325d9c95df20512b36864b9041c7532b35",
+    "omnivoice @ git+https://github.com/k2-fsa/OmniVoice.git@38e992bc60f85548faeb77e8fa70158ba71deb30",
     "protobuf>=5.27",
     "pysbd>=0.3.4",
     "numpy>=1.24",
@@ -28,6 +28,20 @@ dependencies = [
 # ~3 GB of effectively-identical CUDA.
 [project.optional-dependencies]
 gpu = ["torch>=2.8", "torchaudio>=2.8"]
+# FlashInfer-accelerated decode path (upstream PR #239): ~2-2.9x lossless
+# speedup on NVIDIA GPUs. CUDA-only, so it's a separate extra rather than
+# part of `gpu` (which also serves XPU/MPS users via the plain PyPI torch
+# wheel). Install with `--extra gpu,flashinfer`; the provider auto-applies
+# it at model load when running on CUDA (TTS_OMNIVOICE_FLASHINFER overrides).
+#
+# `flashinfer-jit-cache` ships the kernels pre-compiled (AOT) from
+# flashinfer.ai's cu128 index — without it, flashinfer JIT-compiles at first
+# synth and needs a full nvcc/CUDA-toolkit install on the host, which the
+# pip `nvidia-*` wheels do not provide. flashinfer's runtime requires the
+# jit-cache version to match flashinfer-python's (its wheels lag PyPI by a
+# few days sometimes); the shared "==0.6.*" bound plus the lockfile keeps
+# them in step — bump both together.
+flashinfer = ["flashinfer-python==0.6.*", "flashinfer-jit-cache==0.6.*"]
 
 [tool.uv.sources]
 torch = [
@@ -36,10 +50,16 @@ torch = [
 torchaudio = [
     { index = "pytorch-cpu", marker = "extra != 'gpu'" },
 ]
+flashinfer-jit-cache = { index = "flashinfer-cu128" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "flashinfer-cu128"
+url = "https://flashinfer.ai/whl/cu128"
 explicit = true
 
 [build-system]

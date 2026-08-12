@@ -403,6 +403,9 @@ is strongly recommended.
 mise run install-provider omnivoice --extra gpu
 #    Omit --extra gpu to pull the CPU torch wheel instead (much smaller
 #    download, but synthesis will be well below realtime).
+#    On NVIDIA GPUs, add --extra flashinfer for upstream's
+#    FlashInfer-accelerated decode path (~2-2.9x lossless speedup); it is
+#    auto-applied at model load when running on CUDA.
 
 # 2. Drop reference clips into the user-voices dir. Each "voice" is one wav:
 #      <voice-id>.<lang>.wav    ← 3-10 s clean reference audio
@@ -435,13 +438,20 @@ Environment overrides:
 | `TTS_OMNIVOICE_DEVICE` | auto (cuda → xpu → mps → cpu) | Pin a specific torch device string |
 | `TTS_OMNIVOICE_MODEL_PATH` | `~/.local/share/neural-tts-daemon/models/omnivoice` | Pin a local model snapshot dir |
 | `TTS_OMNIVOICE_NUM_STEP` | `16` | Diffusion steps per utterance. Quality vs latency knob — upstream default is 32 (better fidelity); 16 is the README's faster-inference value. Lower = lower TTFA + per-chunk synth time; higher = cleaner audio. |
-| `TTS_OMNIVOICE_COMPILE` | `` (off) | Wrap the model in `torch.compile()` for ~20-40% faster steady-state per diffusion step. Costs 30-60 s extra on the first synth (JIT compile). Accepts `1`/`true`/`on` (= `default` mode), or one of `default`, `reduce-overhead`, `max-autotune`. `reduce-overhead` is fastest but uses CUDA graphs that pin tensor shapes — if you hit recompile storms or shape errors, drop to `default`. Compile failures fall back to eager with a warning. |
+| `TTS_OMNIVOICE_COMPILE` | `` (off) | Wrap the model in `torch.compile()` for ~20-40% faster steady-state per diffusion step. Costs 30-60 s extra on the first synth (JIT compile). Accepts `1`/`true`/`on` (= `default` mode), or one of `default`, `reduce-overhead`, `max-autotune`. `reduce-overhead` is fastest but uses CUDA graphs that pin tensor shapes — if you hit recompile storms or shape errors, drop to `default`. Compile failures fall back to eager with a warning. Ignored while FlashInfer is active. |
+| `TTS_OMNIVOICE_FLASHINFER` | `auto` | FlashInfer decode path (~2-2.9x lossless speedup, CUDA-only, needs `--extra flashinfer`). `auto` applies it when available; `off` disables; `on` warns if unavailable; `cuda-graph` additionally captures per-shape CUDA graphs — fastest steady-state for batch=1, at some startup cost per distinct input shape. |
+| `TTS_OMNIVOICE_PAD_DURATION` | `0.05` | Seconds of silence upstream pads on each side of every synthesized chunk (upstream default 0.1). Streamed chunks join back-to-back, so pad stacks at every seam; `0` disables. |
+| `TTS_OMNIVOICE_FADE_DURATION` | `0.05` | Seconds of fade-in/out applied to each chunk (upstream default 0.1). `0` disables. |
 
-Limitations: no native streaming API upstream, so input is sentence-chunked
-and emitted per chunk (time-to-first-audio scales with the first chunk).
-On a fresh voice without a transcript sidecar, the first synthesis pays a
-one-time Whisper transcription cost; subsequent calls reuse it from
-in-memory cache.
+Limitations: no native streaming API upstream (confirmed architectural —
+OmniVoice is non-autoregressive and samples the whole sequence in parallel),
+so input is sentence-chunked and emitted per chunk (time-to-first-audio
+scales with the first chunk). On a fresh voice without a transcript sidecar,
+the first synthesis pays a one-time Whisper transcription cost; the built
+prompt is then cached to disk under
+`~/.cache/neural-tts-daemon/prompts/omnivoice/` and reused across
+daemon restarts (invalidated automatically when the clip or transcript
+changes).
 
 ## Qwen3-TTS (streaming zero-shot cloning, CUDA-only)
 
